@@ -4,52 +4,65 @@ on:
   release:
     types: [created]
 
-# Explicitly grant the action permission to attach files to the release
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Binaries
-    strategy:
-      matrix:
-        include:
-          # 1. Linux (Intel/AMD)
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-          # 2. Mac (Intel)
-          - os: macos-13
-            goos: darwin
-            goarch: amd64
-          # 3. Mac (Apple Silicon)
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            
-    # This dynamically switches the server type based on the matrix above!
-    runs-on: ${{ matrix.os }}
-    
+  build-linux-amd64:
+    name: Build Linux (Intel/AMD)
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
     - uses: actions/setup-go@v5
       with:
         go-version: '1.22'
-
-    - name: Install Linux dependencies
-      if: matrix.os == 'ubuntu-latest'
+    - name: Install C Compiler for SQLite
       run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
-
-    - name: Build Binary
+    - name: Build
       env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
         CGO_ENABLED: 1
-      run: go build -ldflags="-s -w" -o quicknote-${{ matrix.goos }}-${{ matrix.goarch }} .
-
-    - name: Upload to Release
+        GOOS: linux
+        GOARCH: amd64
+      run: go build -ldflags="-s -w" -o quicknote-linux-amd64 .
+    - name: Upload
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Uses the official GitHub CLI (pre-installed on the servers) to attach the binary
-      run: gh release upload ${{ github.event.release.tag_name }} quicknote-${{ matrix.goos }}-${{ matrix.goarch }}
+      run: gh release upload ${{ github.event.release.tag_name }} quicknote-linux-amd64
+
+  build-mac-intel:
+    name: Build Mac (Intel)
+    runs-on: macos-13 # Explicitly requests an Intel Mac server
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    - name: Build
+      env:
+        CGO_ENABLED: 1
+        GOOS: darwin
+        GOARCH: amd64
+      run: go build -ldflags="-s -w" -o quicknote-darwin-amd64 .
+    - name: Upload
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release upload ${{ github.event.release.tag_name }} quicknote-darwin-amd64
+
+  build-mac-arm:
+    name: Build Mac (Apple Silicon)
+    runs-on: macos-14 # Explicitly requests an M-Series Mac server
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    - name: Build
+      env:
+        CGO_ENABLED: 1
+        GOOS: darwin
+        GOARCH: arm64
+      run: go build -ldflags="-s -w" -o quicknote-darwin-arm64 .
+    - name: Upload
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release upload ${{ github.event.release.tag_name }} quicknote-darwin-arm64
