@@ -4,27 +4,35 @@ on:
   release:
     types: [created]
 
+# Explicitly grant the action permission to attach files to the release
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Binaries
     strategy:
       matrix:
         include:
-          # Linux (Intel/AMD)
+          # 1. Linux (Intel/AMD)
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
-          # Mac (Intel)
-          - os: macos-latest
+          # 2. Mac (Intel)
+          - os: macos-13
             goos: darwin
             goarch: amd64
-          # Mac (Apple Silicon / M1 / M2 / M3)
+          # 3. Mac (Apple Silicon)
           - os: macos-latest
             goos: darwin
             goarch: arm64
+            
+    # This dynamically switches the server type based on the matrix above!
     runs-on: ${{ matrix.os }}
+    
     steps:
     - uses: actions/checkout@v4
+    
     - uses: actions/setup-go@v5
       with:
         go-version: '1.22'
@@ -40,9 +48,8 @@ jobs:
         CGO_ENABLED: 1
       run: go build -ldflags="-s -w" -o quicknote-${{ matrix.goos }}-${{ matrix.goarch }} .
 
-    - name: Upload Release Asset
-      uses: softprops/action-gh-release@v2
+    - name: Upload to Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: quicknote-${{ matrix.goos }}-${{ matrix.goarch }}
+      # Uses the official GitHub CLI (pre-installed on the servers) to attach the binary
+      run: gh release upload ${{ github.event.release.tag_name }} quicknote-${{ matrix.goos }}-${{ matrix.goarch }}
