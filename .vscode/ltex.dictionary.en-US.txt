@@ -1,0 +1,3 @@
+Quicknote
+Cheatsheet
+Un-indent

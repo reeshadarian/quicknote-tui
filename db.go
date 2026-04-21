@@ -6,18 +6,25 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"regexp"   // ADDED
+	"strings"  // ADDED
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type Note struct {
-	ID        int
-	Content   string
-	UpdatedAt string
-	DeletedAt string
-	IsGhost   bool
-	KillHash  string
-	KillStart time.Time
+	ID          int
+	Content     string
+	UpdatedAt   string
+	UpdatedTime time.Time
+	CreatedAt   string
+	CreatedTime time.Time
+	DeletedAt   string
+	DeletedTime time.Time
+	IsGhost     bool
+	KillHash    string
+	KillStart   time.Time
+	Tags        []string
 }
 
 func initDB() *sql.DB {
@@ -34,15 +41,23 @@ func initDB() *sql.DB {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		content TEXT
 	)`)
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS tags (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		note_id INTEGER,
+		tag TEXT,
+		FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+	)`)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	_, _ = db.Exec("ALTER TABLE notes ADD COLUMN kill_hash TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE notes ADD COLUMN kill_start TEXT DEFAULT ''")
-
 	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`)
 	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN deleted_at DATETIME`)
+	
+	// ADDED: Create the created_at column. Ignore error if it already exists.
+	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN created_at DATETIME`)
 
 	_, _ = db.Exec("DELETE FROM notes WHERE deleted_at <= date('now', '-3 days')")
 
@@ -50,18 +65,16 @@ func initDB() *sql.DB {
 }
 
 // --- NEW: Bulletproof Date Parser ---
-// This handles both native time.Time objects and raw strings gracefully
-func parseSQLiteTime(val interface{}) string {
+// Returns both the native time.Time and the formatted string
+func parseSQLiteTime(val interface{}) (time.Time, string) {
 	if val == nil {
-		return ""
+		return time.Time{}, ""
 	}
 
-	// 1. If the driver already parsed it into a native Go time.Time
 	if t, ok := val.(time.Time); ok {
-		return t.Local().Format("02 Jan 2006, 3:04 PM")
+		return t.Local(), t.Local().Format("02 Jan 2006, 3:04 PM")
 	}
 
-	// 2. If it came through as a raw string or byte slice
 	strVal := ""
 	if b, ok := val.([]byte); ok {
 		strVal = string(b)
@@ -70,95 +83,132 @@ func parseSQLiteTime(val interface{}) string {
 	}
 
 	if strVal != "" {
-		// SQLite CURRENT_TIMESTAMP generates "YYYY-MM-DD HH:MM:SS" in UTC
 		if t, err := time.Parse("2006-01-02 15:04:05", strVal); err == nil {
-			return t.Local().Format("02 Jan 2006, 3:04 PM")
+			return t.Local(), t.Local().Format("02 Jan 2006, 3:04 PM")
 		}
 		if t, err := time.Parse(time.RFC3339, strVal); err == nil {
-			return t.Local().Format("02 Jan 2006, 3:04 PM")
+			return t.Local(), t.Local().Format("02 Jan 2006, 3:04 PM")
 		}
 	}
-	return ""
+	return time.Time{}, ""
 }
 
 func loadNotes(db *sql.DB, inTrash bool) []Note {
-    var query string
-    if inTrash {
-        query = "SELECT id, content, updated_at, deleted_at, kill_hash, kill_start FROM notes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
-    } else {
-        query = "SELECT id, content, updated_at, deleted_at, kill_hash, kill_start FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC"
-    }
+	var query string
+	if inTrash {
+		query = `SELECT n.id, n.content, n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, GROUP_CONCAT(t.tag) 
+				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id 
+				 WHERE n.deleted_at IS NOT NULL GROUP BY n.id ORDER BY n.deleted_at DESC`
+	} else {
+		query = `SELECT n.id, n.content, n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, GROUP_CONCAT(t.tag) 
+				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id 
+				 WHERE n.deleted_at IS NULL GROUP BY n.id ORDER BY n.updated_at DESC`
+	}
 
-    rows, err := db.Query(query)
-    if err != nil {
-        return []Note{{ID: 0, Content: "", UpdatedAt: "Just now"}}
-    }
-    defer rows.Close()
+	rows, err := db.Query(query)
+	if err != nil {
+		return []Note{{ID: 0, Content: "", UpdatedTime: time.Now(), CreatedTime: time.Now()}}
+	}
+	defer rows.Close()
 
-    var notes []Note
-    for rows.Next() {
-        var n Note
-        var rawUpdated interface{}
-        var rawDeleted interface{}
-        
-        // Setup variables to catch the new timer columns safely
-        var killHash sql.NullString
-        var killStartStr sql.NullString
+	var notes []Note
+	for rows.Next() {
+		var n Note
+		var rawUpdated, rawCreated, rawDeleted interface{}
+		var killHash, killStartStr, rawTags sql.NullString
 
-        err := rows.Scan(&n.ID, &n.Content, &rawUpdated, &rawDeleted, &killHash, &killStartStr)
-        if err == nil {
-            n.UpdatedAt = parseSQLiteTime(rawUpdated)
-            n.DeletedAt = parseSQLiteTime(rawDeleted)
-            
-            // Restore the timer state if it exists
-            if killHash.Valid {
-                n.KillHash = killHash.String
-            }
-            if killStartStr.Valid && killStartStr.String != "" {
-                if t, err := time.Parse(time.RFC3339, killStartStr.String); err == nil {
-                    n.KillStart = t
-                }
-            }
-        }
+		// Scan now includes rawTags
+		err := rows.Scan(&n.ID, &n.Content, &rawUpdated, &rawCreated, &rawDeleted, &killHash, &killStartStr, &rawTags)
+		if err == nil {
+			n.UpdatedTime, n.UpdatedAt = parseSQLiteTime(rawUpdated)
+			n.CreatedTime, n.CreatedAt = parseSQLiteTime(rawCreated)
+			
+			if n.CreatedAt == "" {
+				n.CreatedTime = n.UpdatedTime
+				n.CreatedAt = n.UpdatedAt
+			}
+			n.DeletedTime, n.DeletedAt = parseSQLiteTime(rawDeleted)
+			
+			if killHash.Valid { n.KillHash = killHash.String }
+			if killStartStr.Valid && killStartStr.String != "" {
+				if t, err := time.Parse(time.RFC3339, killStartStr.String); err == nil {
+					n.KillStart = t
+				}
+			}
 
-        notes = append(notes, n)
-    }
+			// NEW: Parse the concatenated string back into the struct slice
+			if rawTags.Valid && rawTags.String != "" {
+				n.Tags = strings.Split(rawTags.String, ",")
+			} else {
+				n.Tags = []string{}
+			}
+		}
+		notes = append(notes, n)
+	}
 
-    if len(notes) == 0 {
-        if inTrash {
-            notes = append(notes, Note{ID: -1, Content: "--- Trash is Empty ---", UpdatedAt: ""})
-        } else {
-            notes = append(notes, Note{ID: 0, Content: "", UpdatedAt: "Just now"})
-        }
-    }
-    return notes
+	if len(notes) == 0 {
+		if inTrash {
+			notes = append(notes, Note{ID: -1, Content: "--- Trash is Empty ---", UpdatedAt: ""})
+		} else {
+			notes = append(notes, Note{ID: 0, Content: "", UpdatedTime: time.Now(), CreatedTime: time.Now()})
+		}
+	}
+	return notes
 }
 
 func saveNote(db *sql.DB, n Note) Note {
-    if n.ID == -1 { return n }
-    if n.Content == "" && n.ID == 0 { return n }
-
+	if n.ID == -1 { return n }
+	if n.Content == "" && n.ID == 0 { return n }
 	if n.IsGhost { return n }
 	
-    // Convert the start time to a string for SQLite
-    killStartStr := ""
-    if !n.KillStart.IsZero() {
-        killStartStr = n.KillStart.Format(time.RFC3339)
-    }
+	killStartStr := ""
+	if !n.KillStart.IsZero() {
+		killStartStr = n.KillStart.Format(time.RFC3339)
+	}
 
-    if n.ID == 0 {
-        res, err := db.Exec("INSERT INTO notes (content, kill_hash, kill_start) VALUES (?, ?, ?)", n.Content, n.KillHash, killStartStr)
-        if err == nil {
-            id, _ := res.LastInsertId()
-            n.ID = int(id)
-        }
-    } else {
-        _, _ = db.Exec("UPDATE notes SET content = ?, updated_at = CURRENT_TIMESTAMP, kill_hash = ?, kill_start = ? WHERE id = ?", n.Content, n.KillHash, killStartStr, n.ID)
-    }
+	// 1. Extract Tags (Ignoring keywords/kill timers)
+	reTags := regexp.MustCompile(`(?i)#[a-zA-Z0-9_-]+`)
+	matches := reTags.FindAllString(n.Content, -1)
+	tagMap := make(map[string]bool)
+	n.Tags = []string{}
+	
+	for _, t := range matches {
+		tLower := strings.ToLower(t)
+		if tLower == "#kill" || tLower == "#idea" || tLower == "#todo" {
+			continue
+		}
+		if !tagMap[tLower] {
+			tagMap[tLower] = true
+			n.Tags = append(n.Tags, tLower)
+		}
+	}
 
-    // Instantly update the timestamp in memory so the UI updates as soon as you type!
-    n.UpdatedAt = time.Now().Format("02 Jan 2006, 3:04 PM")
-    return n
+	// 2. Save the Note
+	if n.ID == 0 {
+		res, err := db.Exec("INSERT INTO notes (content, kill_hash, kill_start) VALUES (?, ?, ?)", n.Content, n.KillHash, killStartStr)
+		if err == nil {
+			id, _ := res.LastInsertId()
+			n.ID = int(id)
+		}
+	} else {
+		_, _ = db.Exec("UPDATE notes SET content = ?, updated_at = CURRENT_TIMESTAMP, kill_hash = ?, kill_start = ? WHERE id = ?", n.Content, n.KillHash, killStartStr, n.ID)
+	}
+
+	// 3. Sync the Tags Table
+	if n.ID > 0 {
+		_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", n.ID)
+		for _, tag := range n.Tags {
+			_, _ = db.Exec("INSERT INTO tags (note_id, tag) VALUES (?, ?)", n.ID, tag)
+		}
+	}
+
+	n.UpdatedTime = time.Now()
+	n.UpdatedAt = n.UpdatedTime.Format("02 Jan 2006, 3:04 PM")
+	if n.CreatedTime.IsZero() {
+		n.CreatedTime = n.UpdatedTime
+		n.CreatedAt = n.UpdatedAt
+	}
+	return n
 }
 
 func trashNote(db *sql.DB, id int) {
@@ -171,6 +221,7 @@ func trashNote(db *sql.DB, id int) {
 func hardDeleteNote(db *sql.DB, id int) {
 	if id > 0 {
 		_, _ = db.Exec("DELETE FROM notes WHERE id = ?", id)
+		_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", id)
 	}
 }
 
@@ -185,6 +236,7 @@ func deleteNote(db *sql.DB, id int) {
 	// We perform a hard delete here because these are expired #kill notes 
 	// or Ghost notes being purged.
 	_, err := db.Exec("DELETE FROM notes WHERE id = ?", id)
+	_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", id)
 	if err != nil {
 		// We'll log it for now, though in a TUI it's often 
 		// better to just fail silently or show a flashMsg.

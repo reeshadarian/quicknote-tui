@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,16 +12,18 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Knetic/govaluate"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +31,59 @@ import (
 )
 
 type appState int
+
+// --- CONFIGURATION ---
+type Theme struct {
+	BgDark       string `json:"bg_dark"`
+	BgMed        string `json:"bg_med"`
+	TextLight    string `json:"text_light"`
+	TextDark     string `json:"text_dark"`
+	AccentNormal string `json:"accent_normal"`
+	AccentMath   string `json:"accent_math"`
+	AccentCode   string `json:"accent_code"`
+	AccentTrash  string `json:"accent_trash"`
+	Comment      string `json:"comment"`
+}
+
+func loadTheme() Theme {
+	defaultTheme := Theme{
+		BgDark:       "#1E1E2E",
+		BgMed:        "#313244",
+		TextLight:    "#CDD6F4",
+		TextDark:     "#11111B",
+		AccentNormal: "#89B4FA",
+		AccentMath:   "#F9E2AF",
+		AccentCode:   "#A6E3A1",
+		AccentTrash:  "#F38BA8",
+		Comment:      "#6C7086",
+	}
+
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "quicknote-tui")
+	_ = os.MkdirAll(configDir, 0755)
+	themePath := filepath.Join(configDir, "theme.json")
+
+	data, err := os.ReadFile(themePath)
+	if err != nil {
+		// Create the default config file so the user can easily find and edit it later
+		b, _ := json.MarshalIndent(defaultTheme, "", "  ")
+		_ = os.WriteFile(themePath, b, 0644)
+		return defaultTheme
+	}
+
+	var t Theme
+	if err := json.Unmarshal(data, &t); err != nil {
+		return defaultTheme
+	}
+	return t
+}
+
+type searchMode int
+
+const (
+	modeFuzzy searchMode = iota
+	modeLiteral
+	modeTag
+)
 
 const (
 	stateTyping appState = iota
@@ -58,7 +115,8 @@ type model struct {
 	buffer         [][]rune
 	cursorRow      int
 	cursorCol      int
-	virtualPhysCol int 
+	virtualPhysCol int // THE FIX: "Remembers" intended column when moving vertically
+	sMode          searchMode
 
 	viewport    viewport.Model
 	fileInput   textinput.Model
@@ -74,9 +132,29 @@ type model struct {
 	undoStack []textState
 	redoStack []textState
 
-	viewportTop  *int
-	cursorPhase  bool
+	viewportTop *int
+	// cursorPhase  bool
 	lastActivity time.Time
+	freeScroll   bool
+
+	theme Theme
+
+	statActive int // <-- ADD THIS
+	statTrash  int // <-- ADD THIS
+}
+
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "00000000-0000-0000-0000-000000000000" // Fallback if crypto fails
+	}
+
+	// Set the mathematically required Version 4 and Variant 10 bits
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // --- Buffer Helpers ---
@@ -103,35 +181,169 @@ func bufferToString(b [][]rune) string {
 	return builder.String()
 }
 
-// THE FIX: Parses the ORIGINAL segment to prevent exponential memory leaks!
+// THE FIX: Parses the ORIGINAL segment to prevent exponential memory leaks
+// while keeping syntax colors active across wrapped physical lines!
 func carryANSI(segments []string) []string {
 	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	var activeANSI []string
 
 	for i := range segments {
-		// Capture the raw text BEFORE we inject massive amounts of prepended colors
 		originalSegment := segments[i]
-		
-		// Apply previously active ANSI codes to the visual string
+
 		prefix := strings.Join(activeANSI, "")
 		segments[i] = prefix + originalSegment
 
-		// Recalculate active ANSI codes for the NEXT segment using ONLY the original text
 		matches := re.FindAllString(originalSegment, -1)
 		for _, match := range matches {
-			if match == "\x1b[0m" {
-				activeANSI = nil // Clear on reset
+			if match == "\x1b[0m" || match == "\x1b[m" || match == "\x1b[39m" || match == "\x1b[49m" || match == "\x1b[0;0m" {
+				activeANSI = nil
 			} else {
 				activeANSI = append(activeANSI, match)
 			}
 		}
 
-		// Close off the current visual segment so colors don't bleed into the gutter
 		if len(activeANSI) > 0 && !strings.HasSuffix(segments[i], "\x1b[0m") {
 			segments[i] = segments[i] + "\x1b[0m"
 		}
 	}
 	return segments
+}
+
+// THE FIX: Safely slices ANSI strings, injects the cursor, and RESTORES active colors
+// so Lipgloss's \x1b[0m reset doesn't kill Chroma's syntax highlighting!
+func buildPhysicalLines(ansiLine string, cursorCol int, isCursorLine bool, starts []int, lengths []int, visibleCursor string) []string {
+	var physLines []string
+	var currentPhys strings.Builder
+
+	visualIdx := 0
+	inAnsi := false
+	physIdx := 0
+
+	var activeANSI []string
+	var currentANSI strings.Builder
+
+	runes := []rune(ansiLine)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if r == '\x1b' {
+			inAnsi = true
+			currentANSI.Reset()
+		}
+		if inAnsi {
+			currentPhys.WriteRune(r)
+			currentANSI.WriteRune(r)
+			if r == 'm' {
+				inAnsi = false
+				code := currentANSI.String()
+				// Track the active color state
+				if code == "\x1b[0m" || code == "\x1b[m" || code == "\x1b[39m" || code == "\x1b[49m" || code == "\x1b[0;0m" {
+					activeANSI = nil
+				} else {
+					activeANSI = append(activeANSI, code)
+				}
+			}
+			continue
+		}
+
+		if physIdx < len(starts) && visualIdx >= starts[physIdx]+lengths[physIdx] {
+			if physIdx+1 < len(starts) && visualIdx == starts[physIdx+1] {
+				physLines = append(physLines, currentPhys.String())
+				currentPhys.Reset()
+				physIdx++
+			}
+		}
+
+		if physIdx < len(starts) && visualIdx >= starts[physIdx] && visualIdx < starts[physIdx]+lengths[physIdx] {
+			if isCursorLine && visualIdx == cursorCol {
+				currentPhys.WriteString(visibleCursor)
+				// RE-APPLY THE CHROMA COLORS immediately after the cursor's reset code
+				for _, ansi := range activeANSI {
+					currentPhys.WriteString(ansi)
+				}
+			} else {
+				currentPhys.WriteRune(r)
+			}
+		} else {
+			if isCursorLine && visualIdx == cursorCol {
+				currentPhys.WriteString(visibleCursor)
+				// RE-APPLY THE CHROMA COLORS
+				for _, ansi := range activeANSI {
+					currentPhys.WriteString(ansi)
+				}
+			}
+		}
+		visualIdx++
+	}
+
+	if isCursorLine && visualIdx == cursorCol {
+		currentPhys.WriteString(visibleCursor)
+	}
+
+	physLines = append(physLines, currentPhys.String())
+	return physLines
+}
+
+// THE FIX: Safely highlights characters at specific indices without breaking Chroma!
+func applySearchHighlight(highlighted string, indices []int, theme Theme) string {
+	if len(indices) == 0 {
+		return highlighted
+	}
+
+	// High contrast background for the matched characters
+	searchStyle := lipgloss.NewStyle().Background(lipgloss.Color(theme.AccentMath)).Foreground(lipgloss.Color(theme.BgDark)).Render
+
+	var buf strings.Builder
+	visualIdx := 0
+	inAnsi := false
+	var activeANSI []string
+	var currentANSI strings.Builder
+
+	idxPos := 0
+	runes := []rune(highlighted)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if r == '\x1b' {
+			inAnsi = true
+			currentANSI.Reset()
+		}
+		if inAnsi {
+			buf.WriteRune(r)
+			currentANSI.WriteRune(r)
+			if r == 'm' {
+				inAnsi = false
+				code := currentANSI.String()
+				if code == "\x1b[0m" || code == "\x1b[m" || code == "\x1b[39m" || code == "\x1b[49m" || code == "\x1b[0;0m" {
+					activeANSI = nil
+				} else {
+					activeANSI = append(activeANSI, code)
+				}
+			}
+			continue
+		}
+
+		isMatch := false
+		if idxPos < len(indices) && visualIdx == indices[idxPos] {
+			isMatch = true
+			idxPos++
+		}
+
+		if isMatch {
+			buf.WriteString(searchStyle(string(r)))
+			// Restore previous active ANSI colors because lipgloss appends a reset
+			for _, ansi := range activeANSI {
+				buf.WriteString(ansi)
+			}
+		} else {
+			buf.WriteRune(r)
+		}
+
+		visualIdx++
+	}
+
+	return buf.String()
 }
 
 func getLineMap(runes []rune, width int) ([]int, []int) {
@@ -296,7 +508,7 @@ var mathFunctions = map[string]govaluate.ExpressionFunction{
 
 var mathConstants = map[string]interface{}{
 	"pi": math.Pi, "Pi": math.Pi, "PI": math.Pi,
-	"e":  math.E, "E": math.E,
+	"e": math.E, "E": math.E,
 	"phi": 1.618033988749895,
 }
 
@@ -463,6 +675,12 @@ func expandKeywords(val string, isCodeMode bool, lastKey string) (string, bool) 
 	re := regexp.MustCompile(`:(today|Today|time|Time|now|Now)(?:\s*([\+\-])\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+))?:`)
 
 	changed := false
+
+	for strings.Contains(val, ":uuid:") {
+		val = strings.Replace(val, ":uuid:", generateUUID(), 1)
+		changed = true
+	}
+
 	lines := strings.Split(val, "\n")
 
 	for i, line := range lines {
@@ -592,6 +810,39 @@ func tryDateTimeMath(expr string) (string, bool) {
 }
 
 // --- General Helpers ---
+
+func formatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "Just now"
+	}
+	d := time.Since(t)
+	if d < time.Minute {
+		return "Just now"
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		if mins == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", mins)
+	}
+	if d < 24*time.Hour {
+		hrs := int(d.Hours())
+		if hrs == 1 {
+			return "1 hr ago"
+		}
+		return fmt.Sprintf("%d hrs ago", hrs)
+	}
+	days := int(d.Hours() / 24)
+	if days == 1 {
+		return "1 day ago"
+	}
+	if days < 30 {
+		return fmt.Sprintf("%d days ago", days)
+	}
+	return t.Format("02 Jan 2006")
+}
+
 func copyToClipboard(text string) {
 	if _, err := exec.LookPath("pbcopy"); err == nil {
 		cmd := exec.Command("pbcopy")
@@ -661,27 +912,14 @@ func sanitizeFilename(name string) string {
 }
 
 func extractTitle(content string) string {
-	lines := strings.Split(content, "\n")
-	if len(lines) == 0 {
-		return "note"
+	// Re-use our robust heading parser so the file name always matches the status bar!
+	title := getFirstHeading(content)
+
+	if title != "Untitled" && title != "" {
+		return sanitizeFilename(title)
 	}
-	firstLine := strings.TrimSpace(lines[0])
-	lowerFirst := strings.ToLower(firstLine)
-	if strings.HasPrefix(lowerFirst, "math:") || strings.HasPrefix(lowerFirst, "code:") {
-		parts := strings.SplitN(firstLine, ":", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-			return sanitizeFilename(strings.TrimSpace(parts[1]))
-		}
-	}
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "# ") {
-			t := strings.TrimSpace(strings.TrimPrefix(line, "# "))
-			if t != "" {
-				return sanitizeFilename(t)
-			}
-		}
-	}
+
+	// Fallback if the note has no headings at all
 	return "note"
 }
 
@@ -833,21 +1071,163 @@ func updateMathBuffer(val string, lastKey string) (string, bool) {
 	return strings.Join(lines, "\n"), changed
 }
 
-func (m model) reload() model {
-	inTrash := m.state == stateTrash
-	if m.state == stateSearch {
-		inTrash = m.prevState == stateTrash
+func stripANSI(str string) string {
+	var buf strings.Builder
+	inAnsi := false
+	for _, r := range str {
+		if r == '\x1b' {
+			inAnsi = true
+		}
+		if inAnsi {
+			if r == 'm' {
+				inAnsi = false
+			}
+			continue
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
+}
+
+// THE FIX: Fuzzy matches on a strict line-by-line basis.
+// It will only match and highlight if the entire sequence exists within a single line!
+func fuzzyMatch(query, target string) (bool, []int) {
+	if query == "" {
+		return true, nil
 	}
 
-	m.allNotes = loadNotes(m.db, inTrash)
+	qRunes := []rune(strings.ToLower(query))
+	tRunes := []rune(target) // Do NOT lower the entire string at once!
 
+	var allIndices []int
+	var currentLineIndices []int
+	qIdx := 0
+	matchedAnyLine := false
+
+	for i, tRune := range tRunes {
+		if tRune == '\n' {
+			if qIdx == len(qRunes) {
+				matchedAnyLine = true
+				allIndices = append(allIndices, currentLineIndices...)
+			}
+			qIdx = 0
+			currentLineIndices = currentLineIndices[:0]
+			continue
+		}
+
+		if qIdx < len(qRunes) && qRunes[qIdx] == unicode.ToLower(tRune) {
+			currentLineIndices = append(currentLineIndices, i)
+			qIdx++
+		}
+	}
+
+	if qIdx == len(qRunes) {
+		matchedAnyLine = true
+		allIndices = append(allIndices, currentLineIndices...)
+	}
+
+	return matchedAnyLine, allIndices
+}
+
+// THE FIX: Rune-safe literal and tag matchers that return exact indices for highlighting!
+// THE FIX: Standard literal string matcher
+func literalMatch(query, target string) (bool, []int) {
+	if query == "" {
+		return true, nil
+	}
+
+	qRunes := []rune(strings.ToLower(query))
+	tRunes := []rune(strings.ToLower(target))
+
+	var allIndices []int
+	matchedAny := false
+
+	for i := 0; i <= len(tRunes)-len(qRunes); i++ {
+		match := true
+		for j := 0; j < len(qRunes); j++ {
+			if tRunes[i+j] != qRunes[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			matchedAny = true
+			for j := 0; j < len(qRunes); j++ {
+				allIndices = append(allIndices, i+j)
+			}
+			i += len(qRunes) - 1 // Skip ahead so we don't overlap matches
+		}
+	}
+	return matchedAny, allIndices
+}
+
+func tagMatch(query, target string) (bool, []int) {
+	if query == "" {
+		return true, nil
+	}
+
+	fragments := strings.Fields(strings.ToLower(query))
+	targetLower := strings.ToLower(target)
+
+	// Just grab standard hashtags anywhere in the text!
+	reTag := regexp.MustCompile(`(?i)#[a-zA-Z0-9_-]+`)
+	matches := reTag.FindAllStringIndex(targetLower, -1)
+
+	var allIndices []int
+
+	for _, frag := range fragments {
+		// Always auto-prepend hash
+		if !strings.HasPrefix(frag, "#") {
+			frag = "#" + frag
+		}
+
+		matchedThisFrag := false
+
+		for _, matchIdx := range matches {
+			start, end := matchIdx[0], matchIdx[1]
+			tagText := targetLower[start:end]
+
+			if tagText == "#kill" {
+				continue
+			}
+
+			if strings.HasPrefix(tagText, frag) {
+				matchedThisFrag = true
+				for i := start; i < start+len(frag); i++ {
+					allIndices = append(allIndices, i)
+				}
+			}
+		}
+
+		if !matchedThisFrag {
+			return false, nil
+		}
+	}
+
+	return true, allIndices
+}
+
+// Smart router that decides which search engine to use
+func performSearch(query, target string, mode searchMode) (bool, []int) {
+	switch mode {
+	case modeLiteral:
+		return literalMatch(query, target)
+	case modeTag:
+		return tagMatch(query, target)
+	default:
+		return fuzzyMatch(query, target)
+	}
+}
+
+// THE FIX: A blazing fast in-memory filter that skips the hard drive!
+func (m model) filterNotes() model {
 	if m.searchQuery == "" {
 		m.notes = m.allNotes
 	} else {
 		var filtered []Note
-		q := strings.ToLower(m.searchQuery)
 		for _, n := range m.allNotes {
-			if strings.Contains(strings.ToLower(n.Content), q) {
+			isMatch, _ := performSearch(m.searchQuery, stripANSI(n.Content), m.sMode)
+			if isMatch {
 				filtered = append(filtered, n)
 			}
 		}
@@ -871,87 +1251,108 @@ func (m model) reload() model {
 	return m
 }
 
+// reload only hits SQLite when we actually need fresh data
+func (m model) reload() model {
+	inTrash := m.state == stateTrash
+	if m.state == stateSearch {
+		inTrash = m.prevState == stateTrash
+	}
+
+	m.allNotes = loadNotes(m.db, inTrash)
+	return m.filterNotes()
+}
+
 func (m *model) generateHelpText() string {
-	accentNormal := lipgloss.Color("#89B4FA")
-	headerStyle := lipgloss.NewStyle().Foreground(accentNormal).Bold(true)
-
-	currentVal := bufferToString(m.buffer)
-	words := len(strings.Fields(currentVal))
-	chars := len(currentVal)
-
-	val := strings.ToLower(strings.TrimSpace(currentVal))
-	mode := "Normal"
-	if strings.HasPrefix(val, "math:") {
-		mode = "Math Mode"
-	}
-	if strings.HasPrefix(val, "code:") {
-		mode = "Code Mode"
-	}
-
-	timeStr := m.notes[m.index].UpdatedAt
-	if timeStr == "" {
-		timeStr = "Just now"
-	}
-
-	idStr := fmt.Sprintf("Note ID: %d", m.notes[m.index].ID)
-	if m.notes[m.index].ID <= 0 {
-		idStr = "Note ID: Unsaved (New)"
-	}
-
-	infoSection := fmt.Sprintf("%s\n%s\nWords: %d | Characters: %d\nLast Saved: %s\nMode: %s",
-		headerStyle.Render("=== NOTE INFORMATION ==="),
-		idStr, words, chars, timeStr, mode)
-
-	cheatsheet := fmt.Sprintf(`%s
-        Alt+Left/Right : Switch Notes
-        Ctrl+U         : Promote current note to the front
-        Ctrl+N         : Create New Note
-        Ctrl+D         : Delete Current Note
-        Ctrl+S         : Save note to .md file
-        Alt+C          : Copy entire note to clipboard
-        Ctrl+T         : Open Trash Bin
-        Ctrl+F         : Find / Search Notes
-        F1             : Toggle Help
-
-        %s
-        Alt+M          : Toggle Math Mode ('code:' keyword disables lists)
-        Alt+V          : Toggle Code Mode
-        //             : Line comments (ignored by Math, Lists, and Expansions)
-        Ctrl+B / Alt+I : Bold (****) / Italic (**) 
-        `+"\x60 (1x / 3x)    : Auto-pair inline code / create multiline code block"+`
-        Ctrl+X         : Toggle Checkbox / Toggle Strikethrough
-        Ctrl+O/Alt+Ent : Smart open line below
-        Ctrl+K         : Delete Entire Line
-        Ctrl+Z/Alt+Z   : Undo  |  Ctrl+Y/Alt+Y : Redo
-        Tab / Shft+Tab : Indent / Un-indent line (4 spaces)
-        =              : Execute Math on line
-
-        %s
-        :today:        : e.g., 17 Apr 2026
-        :time:         : e.g., 3:04PM
-        :now:          : e.g., 3:04PM 17 Apr 2026`,
-		headerStyle.Render("=== GLOBAL NAVIGATION ==="),
-		headerStyle.Render("=== EDITOR & MODES ==="),
-		headerStyle.Render("=== MAGIC KEYWORDS ==="))
-
-	content := lipgloss.JoinVertical(lipgloss.Left, infoSection, "\n", cheatsheet, "\n(Press Esc, Enter, or F1 to return)")
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentNormal).
-		Padding(1, 3).
-		Render(content)
-
 	termWidth := m.viewport.Width
 	if termWidth == 0 {
 		termWidth = 80
 	}
-	return lipgloss.PlaceHorizontal(termWidth, lipgloss.Center, box)
+
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal)).Bold(true)
+
+	// 1. Document Properties
+	var docProps string
+	if len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
+		currentNote := m.notes[m.index]
+		content := bufferToString(m.buffer)
+		lines := len(m.buffer)
+		words := len(strings.Fields(content))
+		chars := len([]rune(content))
+
+		createdStr := currentNote.CreatedAt
+		if createdStr == "" {
+			createdStr = "Unknown"
+		}
+
+		// ADDED: Extract the tags string
+		tagsDisplay := "None"
+		if len(currentNote.Tags) > 0 {
+			tagsDisplay = strings.Join(currentNote.Tags, ", ")
+		}
+
+		docProps = fmt.Sprintf(
+			"Note ID : %d\nCreated : %s\nUpdated : %s\nTags    : %s\nStats   : %d Lines | %d Words | %d Chars",
+			currentNote.ID, createdStr, currentNote.UpdatedAt, tagsDisplay, lines, words, chars,
+		)
+	} else {
+		docProps = "No active note."
+	}
+	docPropsText := fmt.Sprintf("%s\n%s", headerStyle.Render("=== CURRENT DOCUMENT ==="), docProps)
+
+	// 2. Cheatsheet
+	cheatsheet := fmt.Sprintf(`
+%s
+Alt+Left/Right : Switch Notes
+Ctrl+U         : Promote current note to the front
+Ctrl+N         : Create New Note
+Ctrl+D         : Delete Current Note
+Ctrl+S         : Save note to .md file
+Alt+C          : Copy entire note to clipboard
+Ctrl+T         : Open Trash Bin
+Ctrl+F         : Find / Search Notes
+F1             : Toggle Help
+
+%s
+Alt+M          : Toggle Math Mode ('code:' keyword disables lists)
+Alt+V          : Toggle Code Mode
+//             : Line comments (ignored by Math, Lists, and Expansions)
+Ctrl+B / Alt+I : Bold (****) / Italic (**) 
+`+"\x60 (1x / 3x)    : Auto-pair inline code / create multiline code block"+`
+Ctrl+X         : Toggle Checkbox / Toggle Strikethrough
+Ctrl+O/Alt+Ent : Smart open line below
+Ctrl+K         : Delete Entire Line
+Ctrl+Z/Alt+Z   : Undo  |  Ctrl+Y/Alt+Y : Redo
+Tab / Shft+Tab : Indent / Un-indent line (4 spaces)
+=              : Execute Math on line
+
+%s
+:today:        : e.g., 17 Apr 2026
+:time:         : e.g., 3:04PM
+:now:          : e.g., 3:04PM 17 Apr 2026`,
+		headerStyle.Render("=== GLOBAL NAVIGATION ==="),
+		headerStyle.Render("=== EDITOR & MODES ==="),
+		headerStyle.Render("=== MAGIC KEYWORDS ==="))
+
+	// 3. Database Stats
+	dbPropsText := fmt.Sprintf("%s\nActive Notes : %d\nTrash Bin    : %d", headerStyle.Render("=== DATABASE ==="), m.statActive, m.statTrash)
+
+	// 4. Tags
+	allTags := gatherAllTags(m.allNotes)
+	tagsDisplay := strings.Join(allTags, "   ")
+	if len(allTags) == 0 {
+		tagsDisplay = "No tags found yet!"
+	}
+	wrappedTags := lipgloss.NewStyle().Width(termWidth - 10).Render("Your Tags:\n" + tagsDisplay)
+
+	// Combine in correct order
+	helpText := fmt.Sprintf("%s\n%s\n\n%s\n\n%s", docPropsText, cheatsheet, dbPropsText, wrappedTags)
+
+	return lipgloss.NewStyle().Padding(2, 4).Render(helpText)
 }
 
 // --- Main App Logic ---
 
-func initialModel(db *sql.DB) model {
+func initialModel(db *sql.DB, startTime time.Time) model {
 	fi := textinput.New()
 	fi.Prompt = "Save as: "
 
@@ -963,6 +1364,8 @@ func initialModel(db *sql.DB) model {
 
 	vp := viewport.New(0, 0)
 	vp.Style = lipgloss.NewStyle().Padding(0, 1)
+
+	loadedTheme := loadTheme()
 
 	notes := loadNotes(db, false)
 	initialText := ""
@@ -987,6 +1390,8 @@ func initialModel(db *sql.DB) model {
 		state:          stateTyping,
 		showLineNums:   true,
 		viewportTop:    new(int),
+		theme:          loadedTheme,
+		flashMsg:       fmt.Sprintf("Started in %.2fms", float64(time.Since(startTime).Nanoseconds())/1e6),
 	}
 }
 
@@ -1013,7 +1418,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if len(m.notes) > 0 && m.state != stateTrash {
+	// --- ADDED: Accurately track if we are interacting with trashed notes ---
+	inTrashContext := m.state == stateTrash ||
+		(m.state == stateHelp && m.prevState == stateTrash) ||
+		(m.state == stateSearch && m.prevState == stateTrash)
+
+	// --- UPDATED: Use the context flag instead of checking m.state directly ---
+	if len(m.notes) > 0 && !inTrashContext {
 		currentDoc := bufferToString(m.buffer)
 		hash, duration := getKillTimerInfo(currentDoc)
 
@@ -1055,9 +1466,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		cmds = append(cmds, tickCmd())
 
-	case cursorBlinkMsg:
-		m.cursorPhase = !m.cursorPhase
-		cmds = append(cmds, cursorBlinkCmd())
+	// case cursorBlinkMsg:
+	// 	// THE FIX: Stop toggling the blink if idle for 2 seconds.
+	// 	// If the screen stops changing, Bubble Tea stops redrawing, and native mouse highlighting works!
+	// 	if time.Since(m.lastActivity) < 5*time.Second {
+	// 		m.cursorPhase = !m.cursorPhase
+	// 	} else {
+	// 		m.cursorPhase = true // Force the cursor to stay solid
+	// 	}
+	// 	cmds = append(cmds, cursorBlinkCmd())
 
 	case tea.WindowSizeMsg:
 		m.viewport.Width = msg.Width
@@ -1065,18 +1482,96 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		// ADDED: Route mouse scrolling to the viewport if we are on the F1 screen
+		if m.state == stateHelp {
+			m.viewport, cmd = m.viewport.Update(msg)
+			cmds = append(cmds, cmd)
+			return m, tea.Batch(cmds...)
+		}
 		if msg.Action == tea.MouseActionPress {
-			if msg.Button == tea.MouseButtonWheelUp && *m.viewportTop > 0 {
-				*m.viewportTop--
+			if msg.Button == tea.MouseButtonWheelUp {
+				*m.viewportTop -= 4
+				if *m.viewportTop < 0 {
+					*m.viewportTop = 0
+				}
+				m.freeScroll = true // Detach camera
 			} else if msg.Button == tea.MouseButtonWheelDown {
-				*m.viewportTop++
+				*m.viewportTop += 4
+				m.freeScroll = true // Detach camera
+			} else if msg.Button == tea.MouseButtonLeft {
+				m.freeScroll = false // Re-attach camera on click
+				// 1. Ignore clicks on the status bar
+				if msg.Y >= m.viewport.Height {
+					return m, nil
+				}
+
+				// 2. Account for the line number gutter offset
+				gutterWidth := 0
+				if m.showLineNums {
+					gutterWidth = 6
+				}
+				textWidth := m.viewport.Width - gutterWidth - 1
+				if textWidth <= 0 {
+					textWidth = 80
+				}
+
+				targetPhysLine := *m.viewportTop + msg.Y
+				visualX := msg.X - gutterWidth
+				if visualX < 0 {
+					visualX = 0
+				}
+
+				currentPhysLine := 0
+				found := false
+
+				// 3. Re-simulate the physical wrap to find the exact logical line
+				for i, line := range m.buffer {
+					starts, lengths := getLineMap(line, textWidth)
+
+					if currentPhysLine+len(starts) > targetPhysLine {
+						// We found the logical row!
+						m.cursorRow = i
+						segmentIdx := targetPhysLine - currentPhysLine
+
+						targetCol := starts[segmentIdx] + visualX
+						segmentEnd := starts[segmentIdx] + lengths[segmentIdx]
+
+						// Clamp to the end of the physical wrap segment
+						if targetCol > segmentEnd {
+							targetCol = segmentEnd
+						}
+						// Clamp to the end of the actual line
+						if targetCol > len(line) {
+							targetCol = len(line)
+						}
+
+						m.cursorCol = targetCol
+						m.virtualPhysCol = visualX
+						found = true
+						break
+					}
+					currentPhysLine += len(starts)
+				}
+
+				// 4. If they clicked the blank space below the document, jump to the end
+				if !found && len(m.buffer) > 0 {
+					m.cursorRow = len(m.buffer) - 1
+					m.cursorCol = len(m.buffer[m.cursorRow])
+
+					// Re-evaluate the virtual phys col for the absolute end of the file
+					starts, _ := getLineMap(m.buffer[m.cursorRow], textWidth)
+					physRow := len(starts) - 1
+					m.virtualPhysCol = m.cursorCol - starts[physRow]
+				}
+
+				clampCursor()
 			}
 		}
 		return m, nil
 
 	case tea.KeyMsg:
 		m.lastActivity = time.Now()
-		m.cursorPhase = true
+		m.freeScroll = false // ADDED: Instantly re-attach camera when typing or using arrows
 
 		if m.flashMsg != "" {
 			m.flashMsg = ""
@@ -1088,20 +1583,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = m.prevState
 				m.searchQuery = ""
 				m.searchInput.SetValue("")
-				m = m.reload()
+				m = m.reload() // Re-sync with the DB when exiting search
 				clampCursor()
 				m.virtualPhysCol = 0
 				return m, nil
 			case "enter":
 				m.state = m.prevState
 				return m, nil
+			case "tab":
+				m.sMode = (m.sMode + 1) % 3
+				m = m.filterNotes() // Re-filter instantly using the new mode
+				return m, nil
 			}
+
 			m.searchInput, cmd = m.searchInput.Update(msg)
 			newQuery := strings.ToLower(strings.TrimSpace(m.searchInput.Value()))
+
 			if newQuery != m.searchQuery {
 				m.searchQuery = newQuery
 				m.index = 0
-				m = m.reload()
+				m = m.filterNotes() // <-- THE FIX: Instant in-memory filtering!
 			}
 			return m, cmd
 		}
@@ -1173,7 +1674,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateHelp {
 			switch msg.String() {
 			case "esc", "ctrl+c", "enter", "f1":
-				m.state = stateTyping
+				m.state = m.prevState // THE FIX: Restore the exact state we came from
 				return m, nil
 			case "up", "down", "pgup", "pgdown":
 				m.viewport, cmd = m.viewport.Update(msg)
@@ -1193,6 +1694,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				clampCursor()
 				m.virtualPhysCol = 0
 				return m, nil
+			case "f1":
+				m.prevState = m.state
+				m.state = stateHelp
+
+				// We don't save here because you can't edit notes in the trash.
+				// We just load the active count, and use our already-loaded trash for the trash count!
+				m.statActive = len(loadNotes(m.db, false))
+				m.statTrash = len(m.allNotes)
+
+				m.viewport.SetContent(m.generateHelpText())
+				m.viewport.GotoTop()
+				return m, nil
+			case "ctrl+f":
+				m.prevState = m.state
+				m.state = stateSearch
+				m.searchInput.Focus()
+				m.searchInput.SetValue(m.searchQuery)
+				m.searchInput.CursorEnd()
+				m = m.reload()
+				return m, textinput.Blink
 			case "alt+right":
 				if m.index < len(m.notes)-1 {
 					m.index++
@@ -1254,11 +1775,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		isCodeMode := strings.HasPrefix(contentLower, "code:")
 
 		isMacro := false
+		isModifying := msg.Type == tea.KeyRunes
+
 		switch msg.String() {
-		case "space", "enter", "alt+enter", "ctrl+o", "tab", "shift+tab", "ctrl+x", "ctrl+b", "alt+i", "ctrl+k", "=", "`", "ctrl+s":
+		case " ", "enter", "alt+enter", "ctrl+o", "tab", "shift+tab", "ctrl+x", "ctrl+b", "alt+i", "ctrl+k", "=", "`", "ctrl+s":
 			isMacro = true
+			isModifying = true
+		case "backspace", "delete":
+			isModifying = true
 		}
 
+		// THE FIX: Anchor the pristine state of the document before the very first edit!
+		// This ensures Ctrl+Z can always restore the file to exactly how it opened.
+		if isModifying && len(m.undoStack) == 0 {
+			m.undoStack = append(m.undoStack, textState{
+				content: currentVal,
+				row:     m.cursorRow,
+				col:     m.cursorCol,
+			})
+		}
+
+		// Standard Macro snapshot triggers
 		if isMacro {
 			if len(m.undoStack) == 0 || m.undoStack[len(m.undoStack)-1].content != currentVal {
 				m.undoStack = append(m.undoStack, textState{
@@ -1285,14 +1822,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "ctrl+c":
 			m.notes[m.index].Content = bufferToString(m.buffer)
 			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+
+			// ADDED: If we have an active search filter, clear it and return to the full list
+			if m.searchQuery != "" {
+				m.searchQuery = ""
+				m.searchInput.SetValue("")
+				m.index = 0
+				m = m.reload()
+				m.buffer = stringToBuffer(m.notes[m.index].Content)
+				clampCursor()
+				m.virtualPhysCol = 0
+				// m.flashMsg = "Filter cleared"
+				return m, nil
+			}
+
+			// Otherwise, quit the application
 			return m, tea.Quit
 
 		case "f1":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
-			m.viewport.SetContent(m.generateHelpText())
-			m.viewport.GotoTop()
-			m.state = stateHelp
+			if m.state == stateHelp {
+				m.state = m.prevState // Or stateTyping depending on your setup
+			} else {
+				// ADDED: Save the live buffer to the database first!
+				m.notes[m.index].Content = bufferToString(m.buffer)
+				m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+
+				m.prevState = m.state
+				m.state = stateHelp
+
+				// ADDED: Reload the notes so the "Your Tags" aggregation catches the new tags
+				m.allNotes = loadNotes(m.db, false)
+
+				// Query the DB stats using our freshly loaded data
+				m.statActive = len(m.allNotes)
+				m.statTrash = len(loadNotes(m.db, true))
+
+				// Generate the text and hand it to the viewport
+				m.viewport.SetContent(m.generateHelpText())
+				m.viewport.GotoTop()
+			}
 			return m, nil
 
 		case "f2":
@@ -1373,8 +1941,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
 			m.searchQuery = ""
 			m.searchInput.SetValue("")
-			newNote := Note{ID: 0, Content: "", UpdatedAt: time.Now().Format("2006-01-02 15:04:05")}
+
+			newNote := Note{
+				ID:          0,
+				Content:     "",
+				UpdatedTime: time.Now(),
+				CreatedAt:   time.Now().Format("02 Jan 2006, 3:04 PM"),
+				CreatedTime: time.Now(),
+			}
 			m.allNotes = append([]Note{newNote}, m.allNotes...)
+
+			m.notes[m.index].Content = bufferToString(m.buffer)
+			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+			m.searchQuery = ""
+			m.searchInput.SetValue("")
+
 			m.notes = m.allNotes
 			m.index = 0
 			m.buffer = stringToBuffer("")
@@ -1509,7 +2090,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if msg.String() == "pgup" {
 				m.cursorRow -= m.viewport.Height
 				clampCursor()
-				
+
 				pStarts, pLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
 				targetRow := len(pStarts) - 1
 				targetCol := physCol
@@ -1520,7 +2101,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if msg.String() == "pgdown" {
 				m.cursorRow += m.viewport.Height
 				clampCursor()
-				
+
 				nStarts, nLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
 				targetRow := 0
 				targetCol := physCol
@@ -1545,10 +2126,139 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursorRow++
 				m.cursorCol = 0
 			}
+		case "ctrl+left":
+			if m.cursorCol == 0 {
+				// Jump to the end of the previous line
+				if m.cursorRow > 0 {
+					m.cursorRow--
+					m.cursorCol = len(m.buffer[m.cursorRow])
+				}
+			} else {
+				line := m.buffer[m.cursorRow]
+				// Step back once to start the loop
+				m.cursorCol--
+				// 1. Skip any spaces immediately to our left
+				for m.cursorCol > 0 && line[m.cursorCol-1] == ' ' {
+					m.cursorCol--
+				}
+				// 2. Skip characters until we hit the next space (the start of the word)
+				for m.cursorCol > 0 && line[m.cursorCol-1] != ' ' {
+					m.cursorCol--
+				}
+			}
+
+		case "ctrl+right":
+			if m.cursorCol >= len(m.buffer[m.cursorRow]) {
+				// Jump to the beginning of the next line
+				if m.cursorRow < len(m.buffer)-1 {
+					m.cursorRow++
+					m.cursorCol = 0
+				}
+			} else {
+				line := m.buffer[m.cursorRow]
+				// 1. If we are on a space, skip forward through all spaces
+				if line[m.cursorCol] == ' ' {
+					for m.cursorCol < len(line) && line[m.cursorCol] == ' ' {
+						m.cursorCol++
+					}
+				} else {
+					// 2. Skip forward through the current word
+					for m.cursorCol < len(line) && line[m.cursorCol] != ' ' {
+						m.cursorCol++
+					}
+					// 3. Skip the trailing spaces to land on the first letter of the next word
+					for m.cursorCol < len(line) && line[m.cursorCol] == ' ' {
+						m.cursorCol++
+					}
+				}
+			}
 		case "home", "ctrl+a":
-			m.cursorCol = 0
+			gutterWidth := 0
+			if m.showLineNums {
+				gutterWidth = 6
+			}
+			textWidth := m.viewport.Width - gutterWidth - 1
+			if textWidth <= 0 {
+				textWidth = 80
+			}
+
+			starts, _ := getLineMap(m.buffer[m.cursorRow], textWidth)
+
+			// Find which physical wrapped line the cursor is currently on
+			physRow := len(starts) - 1
+			for r := 0; r < len(starts); r++ {
+				if r < len(starts)-1 {
+					if m.cursorCol < starts[r+1] {
+						physRow = r
+						break
+					}
+				} else {
+					physRow = r
+				}
+			}
+
+			// Find the first non-whitespace character of the logical line
+			firstNonSpace := 0
+			line := m.buffer[m.cursorRow]
+			for firstNonSpace < len(line) && (line[firstNonSpace] == ' ' || line[firstNonSpace] == '\t') {
+				firstNonSpace++
+			}
+
+			if physRow == 0 {
+				// If we are on the very first physical line, toggle between first letter and absolute 0
+				if m.cursorCol == firstNonSpace {
+					m.cursorCol = 0
+				} else {
+					m.cursorCol = firstNonSpace
+				}
+			} else {
+				// If we are on a wrapped physical line...
+				if m.cursorCol == starts[physRow] {
+					// ...and already at the start of the wrap, jump up to the first letter of the sentence
+					m.cursorCol = firstNonSpace
+				} else {
+					// ...otherwise, just jump to the start of the current wrap
+					m.cursorCol = starts[physRow]
+				}
+			}
 		case "end", "ctrl+e":
-			m.cursorCol = len(m.buffer[m.cursorRow])
+			gutterWidth := 0
+			if m.showLineNums {
+				gutterWidth = 6
+			}
+			textWidth := m.viewport.Width - gutterWidth - 1
+			if textWidth <= 0 {
+				textWidth = 80
+			}
+
+			starts, lengths := getLineMap(m.buffer[m.cursorRow], textWidth)
+
+			// Find which physical wrapped line the cursor is currently on
+			physRow := len(starts) - 1
+			for r := 0; r < len(starts); r++ {
+				if r < len(starts)-1 {
+					if m.cursorCol < starts[r+1] {
+						physRow = r
+						break
+					}
+				} else {
+					physRow = r
+				}
+			}
+
+			physEnd := starts[physRow] + lengths[physRow]
+			// Clamp safety just in case trailing spaces were dropped by the wrap engine
+			if physEnd > len(m.buffer[m.cursorRow]) {
+				physEnd = len(m.buffer[m.cursorRow])
+			}
+
+			// If already at the end of the physical wrap, jump to the absolute logical end
+			if m.cursorCol == physEnd {
+				m.cursorCol = len(m.buffer[m.cursorRow])
+			} else {
+				// Otherwise, jump to the end of the current physical wrap
+				m.cursorCol = physEnd
+			}
 
 		case "backspace":
 			if m.cursorCol > 0 {
@@ -1571,7 +2281,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
-			if isCodeMode {
+			// 1. Check if we are inside a markdown code block
+			inCodeBlock := false
+			for r := 0; r <= m.cursorRow; r++ {
+				if strings.Count(string(m.buffer[r]), "```")%2 != 0 {
+					inCodeBlock = !inCodeBlock
+				}
+			}
+
+			// 2. If in a code block or Code Mode, just do a normal newline!
+			if isCodeMode || inCodeBlock {
 				rightPart := append([]rune{}, m.buffer[m.cursorRow][m.cursorCol:]...)
 				m.buffer[m.cursorRow] = m.buffer[m.cursorRow][:m.cursorCol]
 				m.buffer = append(m.buffer[:m.cursorRow+1], append([][]rune{rightPart}, m.buffer[m.cursorRow+1:]...)...)
@@ -1580,6 +2299,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 
+			// 3. Normal smart-list enter logic
 			curLineStr := string(m.buffer[m.cursorRow])
 			trimmed := strings.TrimSpace(curLineStr)
 
@@ -1617,9 +2337,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			lines := strings.Split(bufferToString(m.buffer), "\n")
 			m.buffer = stringToBuffer(strings.Join(autoRenumber(lines), "\n"))
-			m.cursorCol = len([]rune(prefixToInsert))
 
-		case "space":
+			// 4. THE FIX: Dynamically measure the new prefix length for perfect cursor placement
+			renumberedLine := string(m.buffer[m.cursorRow])
+			reNumPrefix := regexp.MustCompile(`^(\s*[a-zA-Z0-9]+\.\s)`)
+
+			if match := reNumPrefix.FindString(renumberedLine); match != "" && reNumPrefix.MatchString(prefixToInsert) {
+				m.cursorCol = len([]rune(match)) // Snaps exactly to the end of the new Roman numeral
+			} else {
+				m.cursorCol = len([]rune(prefixToInsert)) // Fallback for checkboxes and bullets
+			}
+
+		case " ":
 			m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], append([]rune{' '}, m.buffer[m.cursorRow][m.cursorCol:]...)...)
 			m.cursorCol++
 
@@ -1678,7 +2407,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+x":
 			lineStr := string(m.buffer[m.cursorRow])
-			if strings.Contains(lineStr, "- [ ]") {
+			trimmed := strings.TrimSpace(lineStr)
+
+			if trimmed == "" {
+				leadingSpace := lineStr[:len(lineStr)-len(strings.TrimLeft(lineStr, " \t"))]
+				lineStr = leadingSpace + "- [ ] "
+				m.buffer[m.cursorRow] = []rune(lineStr)
+				m.cursorCol = len(m.buffer[m.cursorRow])
+				clampCursor()
+				return m, nil
+			} else if strings.Contains(lineStr, "- [ ]") {
 				lineStr = strings.Replace(lineStr, "- [ ]", "- [x]", 1)
 				parts := strings.SplitN(lineStr, "- [x] ", 2)
 				if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
@@ -1719,7 +2457,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				rest := strings.TrimSpace(lines[0][colonIdx+1:])
 				if rest == "" && len(lines) > 1 {
 					lines = lines[1:]
-					m.cursorRow-- 
+					m.cursorRow--
 				} else {
 					lines[0] = rest
 				}
@@ -1733,7 +2471,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else {
 				lines = append([]string{"math:"}, lines...)
-				m.cursorRow++ 
+				m.cursorRow++
 			}
 			m.buffer = stringToBuffer(strings.Join(lines, "\n"))
 			clampCursor()
@@ -1807,9 +2545,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		default:
 			if msg.Type == tea.KeyRunes {
-				runes := msg.Runes
-				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], append(runes, m.buffer[m.cursorRow][m.cursorCol:]...)...)
-				m.cursorCol += len(runes)
+				strRunes := string(msg.Runes)
+
+				// THE FIX: Intercept multi-line pastes!
+				// If a terminal pastes a massive chunk of text containing newlines as a single event,
+				// we must manually split it so it doesn't get crammed into a single row in m.buffer.
+				if strings.Contains(strRunes, "\n") || strings.Contains(strRunes, "\r") {
+					strRunes = strings.ReplaceAll(strRunes, "\r\n", "\n")
+					strRunes = strings.ReplaceAll(strRunes, "\r", "\n")
+
+					lines := strings.Split(strRunes, "\n")
+
+					// 1. Keep what was to the left and right of the cursor
+					leftPart := append([]rune{}, m.buffer[m.cursorRow][:m.cursorCol]...)
+					rightPart := append([]rune{}, m.buffer[m.cursorRow][m.cursorCol:]...)
+
+					// 2. The current row becomes the left part + the first line of the paste
+					m.buffer[m.cursorRow] = append(leftPart, []rune(lines[0])...)
+
+					// 3. Prepare the new intermediate rows to insert
+					var newRows [][]rune
+					for i := 1; i < len(lines)-1; i++ {
+						newRows = append(newRows, []rune(lines[i]))
+					}
+
+					// 4. The last row gets the remainder of the paste + the original right part
+					if len(lines) > 1 {
+						lastRow := append([]rune(lines[len(lines)-1]), rightPart...)
+						newRows = append(newRows, lastRow)
+					}
+
+					// 5. Splice the new rows safely into the 2D buffer
+					if len(newRows) > 0 {
+						newBuffer := make([][]rune, 0, len(m.buffer)+len(newRows))
+						newBuffer = append(newBuffer, m.buffer[:m.cursorRow+1]...)
+						newBuffer = append(newBuffer, newRows...)
+						newBuffer = append(newBuffer, m.buffer[m.cursorRow+1:]...)
+						m.buffer = newBuffer
+					}
+
+					// 6. Update the cursor position to the end of the paste
+					m.cursorRow += len(lines) - 1
+					if len(lines) > 1 {
+						m.cursorCol = len([]rune(lines[len(lines)-1]))
+					} else {
+						m.cursorCol += len([]rune(lines[0]))
+					}
+
+				} else {
+					// Normal single-line typing
+					m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], append(msg.Runes, m.buffer[m.cursorRow][m.cursorCol:]...)...)
+					m.cursorCol += len(msg.Runes)
+				}
 			}
 		}
 
@@ -1837,7 +2624,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		clampCursor()
 
-		// Reset virtual column on horizontal movements
+		// Save the target physical column on non-vertical movements
 		kStr := msg.String()
 		if kStr != "up" && kStr != "down" && kStr != "pgup" && kStr != "pgdown" {
 			gutterWidth := 0
@@ -1864,28 +2651,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.virtualPhysCol = m.cursorCol - starts[physRow]
 		}
 
-		if m.cursorRow < m.viewport.YOffset {
-			m.viewport.SetYOffset(m.cursorRow)
-		} else if m.cursorRow >= m.viewport.YOffset+m.viewport.Height {
-			m.viewport.SetYOffset(m.cursorRow - m.viewport.Height + 1)
-		}
-
-		return m, tea.Batch(cmds...)
 	}
 
-	return m, nil
+	return m, tea.Batch(cmds...)
+}
+
+func gatherAllTags(notes []Note) []string {
+	tagCounts := make(map[string]int)
+	for _, n := range notes {
+		for _, tag := range n.Tags {
+			tagCounts[tag]++
+		}
+	}
+
+	var uniqueTags []string
+	for tag, count := range tagCounts {
+		uniqueTags = append(uniqueTags, fmt.Sprintf("%s (%d)", tag, count))
+	}
+
+	sort.Strings(uniqueTags)
+	return uniqueTags
 }
 
 func (m model) View() string {
-	bgDark := lipgloss.Color("#1E1E2E")
-	bgMed := lipgloss.Color("#313244")
-	textLight := lipgloss.Color("#CDD6F4")
-	textDark := lipgloss.Color("#11111B")
+	bgDark := lipgloss.Color(m.theme.BgDark)
+	bgMed := lipgloss.Color(m.theme.BgMed)
+	textLight := lipgloss.Color(m.theme.TextLight)
+	textDark := lipgloss.Color(m.theme.TextDark)
 
-	accentNormal := lipgloss.Color("#89B4FA")
-	accentMath := lipgloss.Color("#F9E2AF")
-	accentCode := lipgloss.Color("#A6E3A1")
-	accentTrash := lipgloss.Color("#F38BA8")
+	accentNormal := lipgloss.Color(m.theme.AccentNormal)
+	accentMath := lipgloss.Color(m.theme.AccentMath)
+	accentCode := lipgloss.Color(m.theme.AccentCode)
+	accentTrash := lipgloss.Color(m.theme.AccentTrash)
 
 	currentText := bufferToString(m.buffer)
 	words := len(strings.Fields(currentText))
@@ -1920,7 +2717,14 @@ func (m model) View() string {
 		searchTag = fmt.Sprintf(" [Find: %s] ", m.searchQuery)
 	}
 
-	noteInfoStr := fmt.Sprintf(" Note %d/%d%s ", m.index+1, len(m.notes), searchTag)
+	// THE FIX: Check if the only note in the array is our "No Matches" dummy note
+	var noteInfoStr string
+	if len(m.notes) == 1 && m.notes[0].ID == -1 {
+		noteInfoStr = fmt.Sprintf(" Note 0/0%s ", searchTag)
+	} else {
+		noteInfoStr = fmt.Sprintf(" Note %d/%d%s ", m.index+1, len(m.notes), searchTag)
+	}
+
 	if m.notes[m.index].IsGhost {
 		noteInfoStr = lipgloss.NewStyle().Background(lipgloss.Color(bgMed)).Foreground(textLight).Bold(true).Padding(0, 1).Render("󰊠")
 	}
@@ -1929,12 +2733,12 @@ func (m model) View() string {
 	}
 
 	noteBlock := lipgloss.NewStyle().Background(bgMed).Foreground(textLight).Padding(0, 1).Render(noteInfoStr)
-	statBlock := lipgloss.NewStyle().Background(bgDark).Foreground(textLight).Padding(0, 1).Render(fmt.Sprintf("%dW %dC", words, chars))
+	statBlock := lipgloss.NewStyle().Background(bgDark).Foreground(textLight).Padding(0, 1).Render(fmt.Sprintf(" %dW %dC", words, chars))
 
 	headingBlock := ""
 	heading := getFirstHeading(currentText)
 	if heading != "Untitled" && heading != "" {
-		headingBlock = lipgloss.NewStyle().Background(bgDark).Foreground(accentNormal).Padding(0, 1).Render("│ " + heading)
+		headingBlock = lipgloss.NewStyle().Background(bgDark).Foreground(textLight).Padding(0, 1).Render("│  " + heading)
 	}
 
 	killBlock := ""
@@ -1974,14 +2778,12 @@ func (m model) View() string {
 
 	leftBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBarBlocks...)
 
-	timeStr := m.notes[m.index].UpdatedAt
-	if timeStr == "" {
-		timeStr = "Just now"
-	}
+	timeStr := " " + formatRelativeTime(m.notes[m.index].UpdatedTime) + " "
 	if m.state == stateTrash {
-		timeStr = "Deleted: " + m.notes[m.index].DeletedAt
-		if m.notes[m.index].DeletedAt == "" {
-			timeStr = "Deleted: Unknown"
+		if m.notes[m.index].DeletedTime.IsZero() {
+			timeStr = " Deleted: Unknown "
+		} else {
+			timeStr = " Deleted: " + formatRelativeTime(m.notes[m.index].DeletedTime) + " "
 		}
 	}
 
@@ -2002,11 +2804,21 @@ func (m model) View() string {
 	statusBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBar, spacerStyle, rightBar)
 
 	if m.state == stateHelp {
-		return fmt.Sprintf("%s\n%s", m.viewport.View(), statusBar)
+		return m.viewport.View()
 	}
 
 	if m.state == stateSearch {
-		p := lipgloss.NewStyle().Foreground(accentNormal).Bold(true).Render("Find in Notes (Esc to clear)") + "\n\n" + m.searchInput.View()
+		modeName := "Fuzzy"
+		if m.sMode == modeLiteral {
+			modeName = "Literal"
+		} else if m.sMode == modeTag {
+			modeName = "Tag"
+		}
+
+		p := lipgloss.NewStyle().Foreground(accentNormal).Bold(true).Render(
+			fmt.Sprintf("Find in Notes [%s Mode] (Tab to switch, Esc to clear)", modeName),
+		) + "\n\n" + m.searchInput.View()
+
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accentNormal).Padding(1, 3).Render(p)
 		centeredBox := lipgloss.Place(termWidth, m.viewport.Height, lipgloss.Center, lipgloss.Center, box)
 		return lipgloss.JoinVertical(lipgloss.Left, centeredBox, statusBar)
@@ -2030,224 +2842,244 @@ func (m model) View() string {
 }
 
 func (m *model) renderEditorView() string {
-	var builder strings.Builder
-	cursorToken := string(rune(0xE000))
-	wrapToken := string(rune(0xE002))
-	charUnderCursor := " "
+	// 1. Get raw string WITHOUT cursor tokens!
+	rawText := bufferToString(m.buffer)
 
-	gutterWidth := 0
-	if m.showLineNums {
-		gutterWidth = 6
-	}
+	isCodeMode := strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawText)), "code:")
 
-	textWidth := m.viewport.Width - gutterWidth - 1
-	if textWidth <= 0 {
-		textWidth = 80
-	}
-
-	var physicalLineIdx int
-	cursorPhysicalRow := 0
-
-	for r, line := range m.buffer {
-		starts, lengths := getLineMap(line, textWidth)
-		isCursorLine := (r == m.cursorRow)
-
-		for p, start := range starts {
-			length := lengths[p]
-			end := start + length
-			segment := line[start:end]
-
-			if isCursorLine {
-				isCursorInThisSegment := false
-				if p < len(starts)-1 {
-					if m.cursorCol >= start && m.cursorCol < starts[p+1] {
-						isCursorInThisSegment = true
-					}
-				} else {
-					if m.cursorCol >= start && m.cursorCol <= len(line) {
-						isCursorInThisSegment = true
-					}
-				}
-
-				if isCursorInThisSegment {
-					cursorPhysicalRow = physicalLineIdx
-					segmentCol := m.cursorCol - start
-
-					if segmentCol < len(segment) {
-						charUnderCursor = string(segment[segmentCol])
-						builder.WriteString(string(segment[:segmentCol]))
-						builder.WriteString(cursorToken)
-						builder.WriteString(string(segment[segmentCol+1:]))
-					} else {
-						builder.WriteString(string(segment))
-						builder.WriteString(cursorToken)
-					}
-				} else {
-					builder.WriteString(string(segment))
-				}
-			} else {
-				builder.WriteString(string(segment))
+	// Helper to tokenize markdown formatting ONLY outside of multiline code blocks
+	tokenizeMarkdown := func(text string, re *regexp.Regexp, baseRune rune, tokenMap map[string]string) string {
+		chunks := strings.Split(text, "```")
+		for i := range chunks {
+			if i%2 == 1 { // Inside a code block! Skip it.
+				continue
 			}
-
-			physicalLineIdx++
-
-			if p < len(starts)-1 {
-				builder.WriteString(wrapToken)
+			matches := re.FindAllString(chunks[i], -1)
+			for _, match := range matches {
+				token := string(rune(baseRune + rune(len(tokenMap))))
+				tokenMap[token] = match
+				chunks[i] = strings.Replace(chunks[i], match, token, 1)
 			}
 		}
-
-		if r < len(m.buffer)-1 {
-			builder.WriteRune('\n')
-		}
+		return strings.Join(chunks, "```")
 	}
 
-	rawWithCursorToken := builder.String()
-
-	reStrike := regexp.MustCompile(`~~(.*?)~~`)
-	strikeMatches := reStrike.FindAllString(rawWithCursorToken, -1)
 	strikeMap := make(map[string]string)
-	for i, match := range strikeMatches {
-		token := string(rune(0xE001 + i))
-		strikeMap[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
+	h3Map := make(map[string]string)
+	h2Map := make(map[string]string)
+	h1Map := make(map[string]string)
+
+	// Only apply Markdown Headings if we aren't globally in Code Mode
+	if !isCodeMode {
+		// THE FIX 1: Use [ \t] instead of \s so we don't accidentally consume newlines (\n)
+		// and merge empty lines together!
+		rawText = tokenizeMarkdown(rawText, regexp.MustCompile(`~~(.*?)~~`), 0xF0000, strikeMap)
+		rawText = tokenizeMarkdown(rawText, regexp.MustCompile(`(?m)^[ \t]*###[ \t]+.*`), 0xF2000, h3Map)
+		rawText = tokenizeMarkdown(rawText, regexp.MustCompile(`(?m)^[ \t]*##[ \t]+.*`), 0xF3000, h2Map)
+		rawText = tokenizeMarkdown(rawText, regexp.MustCompile(`(?m)^[ \t]*#[ \t]+.*`), 0xF4000, h1Map)
+	}
+
+	// THE FIX 2: These must be the ONLY other regex extractions! If you have older
+	// reH1 or reStrike parsers below this point, they will break the code-block protection!
+	reKeyword := regexp.MustCompile(`(?i)#(idea|todo)\b`)
+	keywordMatches := reKeyword.FindAllString(rawText, -1)
+	keywordMap := make(map[string]string)
+	for i, match := range keywordMatches {
+		token := string(rune(0xE500 + i))
+		keywordMap[token] = match
+		rawText = strings.Replace(rawText, match, token, 1)
 	}
 
 	reKill := regexp.MustCompile(`(?i)#kill\s+[0-9.]+\s*[a-zA-Z]+`)
-	killMatches := reKill.FindAllString(rawWithCursorToken, -1)
+	killMatches := reKill.FindAllString(rawText, -1)
 	killMap := make(map[string]string)
 	for i, match := range killMatches {
-		token := string(rune(0xE0A0 + i))
-		killMap[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
-	}
-
-	reH3 := regexp.MustCompile(`(?m)^[\s` + cursorToken + `]*###\s+.*`)
-	h3Matches := reH3.FindAllString(rawWithCursorToken, -1)
-	h3Map := make(map[string]string)
-	for i, match := range h3Matches {
 		token := string(rune(0xE100 + i))
-		h3Map[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
-	}
-
-	reH2 := regexp.MustCompile(`(?m)^[\s` + cursorToken + `]*##\s+.*`)
-	h2Matches := reH2.FindAllString(rawWithCursorToken, -1)
-	h2Map := make(map[string]string)
-	for i, match := range h2Matches {
-		token := string(rune(0xE200 + i))
-		h2Map[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
-	}
-
-	reH1 := regexp.MustCompile(`(?m)^[\s` + cursorToken + `]*#\s+.*`)
-	h1Matches := reH1.FindAllString(rawWithCursorToken, -1)
-	h1Map := make(map[string]string)
-	for i, match := range h1Matches {
-		token := string(rune(0xE300 + i))
-		h1Map[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
+		killMap[token] = match
+		rawText = strings.Replace(rawText, match, token, 1)
 	}
 
 	reTag := regexp.MustCompile(`#[a-zA-Z0-9_-]+`)
-	tagMatches := reTag.FindAllString(rawWithCursorToken, -1)
+	tagMatches := reTag.FindAllString(rawText, -1)
 	tagMap := make(map[string]string)
 	for i, match := range tagMatches {
-		token := string(rune(0xE400 + i))
+		token := string(rune(0xE200 + i))
 		tagMap[token] = match
-		rawWithCursorToken = strings.Replace(rawWithCursorToken, match, token, 1)
+		rawText = strings.Replace(rawText, match, token, 1)
 	}
 
-	highlighted := highlightText(rawWithCursorToken)
+	// 3. Highlight the pure text via Chroma
+	highlighted := highlightText(rawText, m.theme)
 
-	rawLines := strings.Split(rawWithCursorToken, "\n")
+	// 4. Custom Line Styles (comments, blockquotes, lists)
+	rawLines := strings.Split(rawText, "\n")
 	hlLines := strings.Split(highlighted, "\n")
 
-	commentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086")).Italic(true)
-	blockquoteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA"))
-	listStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	if len(hlLines) > len(rawLines) {
+		hlLines = hlLines[:len(rawLines)]
+	} else if len(hlLines) < len(rawLines) {
+		for len(hlLines) < len(rawLines) {
+			hlLines = append(hlLines, "")
+		}
+	}
 
-	reList := regexp.MustCompile(`^([\s\x{E000}]*[a-zA-Z0-9\x{E000}]+\.[\s\x{E000}]+)`)
+	commentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Italic(true)
+	blockquoteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal))
+	listStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal)).Bold(true)
 
+	reList := regexp.MustCompile(`^([\s]*[a-zA-Z0-9]+\.[\s]+)`)
+
+	inCodeBlock := false
 	for i, rawLine := range rawLines {
-		cleanLine := strings.ReplaceAll(rawLine, string(rune(0xE000)), "")
-		cleanLine = strings.ReplaceAll(cleanLine, wrapToken, "")
-		trimmed := strings.TrimSpace(cleanLine)
+		if strings.Count(rawLine, "```")%2 != 0 {
+			inCodeBlock = !inCodeBlock
+		}
+
+		treatAsCode := inCodeBlock || isCodeMode
+		trimmed := strings.TrimSpace(rawLine)
 
 		if strings.HasPrefix(trimmed, "//") {
 			hlLines[i] = commentStyle.Render(rawLine)
-		} else if strings.HasPrefix(trimmed, ">") {
+		} else if treatAsCode && strings.HasPrefix(trimmed, "#") {
+			hlLines[i] = commentStyle.Render(rawLine)
+		} else if !treatAsCode && strings.HasPrefix(trimmed, ">") {
 			hlLines[i] = blockquoteStyle.Render(rawLine)
-		} else if match := reList.FindStringSubmatch(rawLine); match != nil {
+		} else if !treatAsCode && reList.MatchString(rawLine) {
+			match := reList.FindStringSubmatch(rawLine)
 			prefix := match[1]
 			hlLines[i] = strings.Replace(hlLines[i], prefix, listStyle.Render(prefix), 1)
 		}
 	}
 	highlighted = strings.Join(hlLines, "\n")
 
-	strikeStyle := lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("#6C7086"))
+	// 5. Restore Tokens
+	strikeStyle := lipgloss.NewStyle().Strikethrough(true)
+	h3Style := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal)).Bold(true)
+	h2Style := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal)).Bold(true).Underline(true)
+	h1Style := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.BgDark)).Background(lipgloss.Color(m.theme.AccentNormal)).Bold(true)
+	killStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.BgDark)).Background(lipgloss.Color(m.theme.AccentTrash)).Bold(true)
+	tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.AccentNormal)).Italic(true)
+	keywordStyle := lipgloss.NewStyle().Background(lipgloss.Color(m.theme.AccentMath)).Foreground(lipgloss.Color(m.theme.BgDark)).Bold(true)
+
 	for token, match := range strikeMap {
 		highlighted = strings.Replace(highlighted, token, strikeStyle.Render(match), 1)
 	}
-	killStyle := lipgloss.NewStyle().Background(lipgloss.Color("#F38BA8")).Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-	for token, match := range killMap {
-		highlighted = strings.Replace(highlighted, token, killStyle.Render(match), 1)
-	}
-	h1Style := lipgloss.NewStyle().Background(lipgloss.Color("#89B4FA")).Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-	for token, match := range h1Map {
-		highlighted = strings.Replace(highlighted, token, h1Style.Render(match), 1)
-	}
-	h2Style := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1")).Bold(true)
-	for token, match := range h2Map {
-		highlighted = strings.Replace(highlighted, token, h2Style.Render(match), 1)
-	}
-	h3Style := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true)
 	for token, match := range h3Map {
 		highlighted = strings.Replace(highlighted, token, h3Style.Render(match), 1)
 	}
-	tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBA6F7")).Italic(true)
+	for token, match := range h2Map {
+		highlighted = strings.Replace(highlighted, token, h2Style.Render(match), 1)
+	}
+	for token, match := range h1Map {
+		highlighted = strings.Replace(highlighted, token, h1Style.Render(match), 1)
+	}
+	for token, match := range killMap {
+		highlighted = strings.Replace(highlighted, token, killStyle.Render(match), 1)
+	}
+	for token, match := range keywordMap {
+		highlighted = strings.Replace(highlighted, token, keywordStyle.Render(match), 1)
+	}
 	for token, match := range tagMap {
 		highlighted = strings.Replace(highlighted, token, tagStyle.Render(match), 1)
+	}
+
+	// 6. Build Physical Lines and visually inject cursor!
+	charUnderCursor := " "
+	if m.cursorCol < len(m.buffer[m.cursorRow]) {
+		charUnderCursor = string(m.buffer[m.cursorRow][m.cursorCol])
 	}
 
 	cursorStyle := lipgloss.NewStyle().Reverse(true)
 	var visibleCursor string
 
-	if m.cursorPhase || time.Since(m.lastActivity) < time.Millisecond*530 {
-		visibleCursor = cursorStyle.Render(charUnderCursor)
-	} else {
-		visibleCursor = charUnderCursor
-	}
-
-	highlighted = strings.Replace(highlighted, cursorToken, visibleCursor, 1)
+	visibleCursor = cursorStyle.Render(charUnderCursor)
+	// if m.cursorPhase || time.Since(m.lastActivity) < time.Millisecond*530 {
+	// } else {
+	// 	visibleCursor = charUnderCursor
+	// }
 
 	logicalLinesHl := strings.Split(highlighted, "\n")
+
+	if len(logicalLinesHl) > len(m.buffer) {
+		logicalLinesHl = logicalLinesHl[:len(m.buffer)]
+	} else if len(logicalLinesHl) < len(m.buffer) {
+		for len(logicalLinesHl) < len(m.buffer) {
+			logicalLinesHl = append(logicalLinesHl, "")
+		}
+	}
+
 	var physicalLines []string
 
+	cursorPhysicalRow := 0
+	physicalLineIdx := 0
+	wrapToken := string(rune(0xF9000))
+
+	gutterWidth := 0
+	if m.showLineNums {
+		gutterWidth = 6
+	}
+	textWidth := m.viewport.Width - gutterWidth - 1
+	if textWidth <= 0 {
+		textWidth = 80
+	}
+
 	for i, logicalLineHl := range logicalLinesHl {
-		physSegments := strings.Split(logicalLineHl, wrapToken)
-		
+		starts, lengths := getLineMap(m.buffer[i], textWidth)
+		isCursorLine := (i == m.cursorRow)
+
+		physSegments := buildPhysicalLines(logicalLineHl, m.cursorCol, isCursorLine, starts, lengths, visibleCursor)
 		physSegments = carryANSI(physSegments)
 
 		for j, pLine := range physSegments {
 			if m.showLineNums {
 				if j == 0 {
 					numStr := fmt.Sprintf("%3d │ ", i+1)
-					gutter := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086")).Render(numStr)
+					gutter := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render(numStr)
 					physicalLines = append(physicalLines, gutter+pLine)
 				} else {
-					emptyGutter := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086")).Render("    │ ")
+					emptyGutter := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("    │ ")
 					physicalLines = append(physicalLines, emptyGutter+pLine)
 				}
 			} else {
 				physicalLines = append(physicalLines, pLine)
 			}
 		}
+
+		if isCursorLine {
+			for p, start := range starts {
+				if p < len(starts)-1 {
+					if m.cursorCol >= start && m.cursorCol < starts[p+1] {
+						cursorPhysicalRow = physicalLineIdx + p
+						break
+					}
+				} else {
+					cursorPhysicalRow = physicalLineIdx + p
+				}
+			}
+		}
+
+		physicalLineIdx += len(physSegments)
 	}
 
-	if cursorPhysicalRow < *m.viewportTop {
-		*m.viewportTop = cursorPhysicalRow
-	} else if cursorPhysicalRow >= *m.viewportTop+m.viewport.Height {
-		*m.viewportTop = cursorPhysicalRow - m.viewport.Height + 1
+	// 1. Only force the camera to the cursor if we aren't free-scrolling
+	if !m.freeScroll {
+		if cursorPhysicalRow < *m.viewportTop {
+			*m.viewportTop = cursorPhysicalRow
+		} else if cursorPhysicalRow >= *m.viewportTop+m.viewport.Height {
+			*m.viewportTop = cursorPhysicalRow - m.viewport.Height + 1
+		}
+	}
+
+	// 2. Prevent the scroll wheel from scrolling infinitely past the bottom
+	maxTop := len(physicalLines) - m.viewport.Height + 1
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if *m.viewportTop > maxTop {
+		*m.viewportTop = maxTop
+	}
+	if *m.viewportTop < 0 {
+		*m.viewportTop = 0
 	}
 
 	startRow := *m.viewportTop
@@ -2265,6 +3097,7 @@ func (m *model) renderEditorView() string {
 
 	visibleLines := physicalLines[startRow:endRow]
 	visibleText := strings.Join(visibleLines, "\n")
+	visibleText = strings.ReplaceAll(visibleText, wrapToken, "")
 
 	return lipgloss.NewStyle().
 		Width(m.viewport.Width).
@@ -2272,54 +3105,17 @@ func (m *model) renderEditorView() string {
 		Render(visibleText)
 }
 
-// --- Syntax Highlighting Styles ---
-
-var quicknoteStyle = styles.Register(chroma.MustNewStyle("quicknote", chroma.StyleEntries{
-	chroma.Text:                "#CDD6F4",
-	chroma.Error:               "#F38BA8",
-	chroma.Comment:             "#6C7086",
-	chroma.Keyword:             "#89B4FA",
-	chroma.KeywordNamespace:    "#89B4FA",
-	chroma.KeywordType:         "#89B4FA",
-	chroma.Operator:            "#89DCEB",
-	chroma.Punctuation:         "#94E2D5",
-	chroma.Name:                "#CDD6F4",
-	chroma.NameAttribute:       "#89B4FA",
-	chroma.NameClass:           "#F9E2AF",
-	chroma.NameConstant:        "#FAB387",
-	chroma.NameDecorator:       "#F9E2AF",
-	chroma.NameException:       "#F38BA8",
-	chroma.NameFunction:        "#89B4FA",
-	chroma.NameOther:           "#CDD6F4",
-	chroma.NameTag:             "#89B4FA",
-	chroma.LiteralNumber:       "#FAB387",
-	chroma.LiteralString:       "#A6E3A1",
-	chroma.LiteralStringEscape: "#F9E2AF",
-	chroma.GenericDeleted:      "#F38BA8",
-	chroma.GenericInserted:     "#A6E3A1",
-	chroma.Background:          "bg:#1E1E2E",
-	chroma.GenericEmph:         "#A6E3A1 italic",
-	chroma.GenericStrong:       "#F38BA8 bold",
-	chroma.GenericPrompt:       "#89B4FA",
-	chroma.GenericTraceback:    "#89B4FA",
-	chroma.GenericHeading:      "bg:#89B4FA #FFFFFF bold",
-	chroma.GenericSubheading:   "bg:#89B4FA #FFFFFF bold",
-	chroma.LiteralStringBacktick: "bg:#11111B #F38BA8",
-}))
-
-func highlightText(content string) string {
+func highlightText(content string, t Theme) string {
 	if content == "" {
 		return ""
 	}
 
 	var lexer chroma.Lexer
-
 	lines := strings.SplitN(content, "\n", 2)
 	firstLineLower := strings.ToLower(strings.TrimSpace(lines[0]))
 
 	if strings.HasPrefix(firstLineLower, "code:") {
 		lang := strings.TrimSpace(firstLineLower[5:])
-
 		if lang == "" {
 			lexer = lexers.Get("markdown")
 		} else {
@@ -2335,7 +3131,6 @@ func highlightText(content string) string {
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}
-
 	lexer = chroma.Coalesce(lexer)
 
 	formatter := formatters.Get("terminal16m")
@@ -2343,10 +3138,39 @@ func highlightText(content string) string {
 		formatter = formatters.Fallback
 	}
 
-	style := styles.Get("quicknote")
-	if style == nil {
-		style = styles.Fallback
-	}
+	// THE FIX: Dynamically generate the Chroma style dictionary from your JSON config!
+	dynamicStyle := chroma.MustNewStyle("dynamicTheme", chroma.StyleEntries{
+		chroma.Text:                  t.TextLight,
+		chroma.Error:                 t.AccentTrash,
+		chroma.Comment:               t.Comment,
+		chroma.Keyword:               t.AccentNormal,
+		chroma.KeywordNamespace:      t.AccentNormal,
+		chroma.KeywordType:           t.AccentNormal,
+		chroma.Operator:              t.AccentMath, // Reused AccentMath for operators
+		chroma.Punctuation:           t.TextLight,
+		chroma.Name:                  t.TextLight,
+		chroma.NameAttribute:         t.AccentNormal,
+		chroma.NameClass:             t.AccentMath,
+		chroma.NameConstant:          t.AccentMath,
+		chroma.NameDecorator:         t.AccentMath,
+		chroma.NameException:         t.AccentTrash,
+		chroma.NameFunction:          t.AccentNormal,
+		chroma.NameOther:             t.TextLight,
+		chroma.NameTag:               t.AccentNormal,
+		chroma.LiteralNumber:         t.AccentMath,
+		chroma.LiteralString:         t.AccentCode,
+		chroma.LiteralStringEscape:   t.AccentMath,
+		chroma.GenericDeleted:        t.AccentTrash,
+		chroma.GenericInserted:       t.AccentCode,
+		chroma.Background:            "bg:" + t.BgDark,
+		chroma.GenericEmph:           t.AccentCode + " italic",
+		chroma.GenericStrong:         t.AccentTrash + " bold",
+		chroma.GenericPrompt:         t.AccentNormal,
+		chroma.GenericTraceback:      t.AccentNormal,
+		chroma.GenericHeading:        "bg:" + t.AccentNormal + " #FFFFFF bold",
+		chroma.GenericSubheading:     "bg:" + t.AccentNormal + " #FFFFFF bold",
+		chroma.LiteralStringBacktick: "bg:" + t.BgMed + " " + t.AccentTrash,
+	})
 
 	iterator, err := lexer.Tokenise(nil, content)
 	if err != nil {
@@ -2354,7 +3178,7 @@ func highlightText(content string) string {
 	}
 
 	var buf bytes.Buffer
-	err = formatter.Format(&buf, style, iterator)
+	err = formatter.Format(&buf, dynamicStyle, iterator)
 	if err != nil {
 		return content
 	}
@@ -2363,6 +3187,8 @@ func highlightText(content string) string {
 }
 
 func main() {
+	startTime := time.Now()
+
 	noteFlag := flag.String("n", "", "Create a note directly from the command line")
 	quietFlag := flag.Bool("q", false, "Quiet mode: save note and exit without opening the UI")
 	titleFlag := flag.String("t", "", "Title/Heading for the note (creates new or appends to existing)")
@@ -2455,7 +3281,12 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(db), tea.WithAltScreen(), tea.WithInput(tuiInput))
+	p := tea.NewProgram(
+		initialModel(db, startTime),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(), // ADDED: Tells the terminal to track clicks
+		tea.WithInput(tuiInput),
+	)
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
