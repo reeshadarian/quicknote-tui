@@ -32,23 +32,23 @@ Quicknote is built to be a silent companion in your shell workflow. You can inte
 ### Standard Usage
 ```bash
 # Open the Quicknote TUI (defaults to your most recent active note)
-$ qnote
+$ quicknote
 
 # Create a new note directly from the terminal
-$ qnote -n "Check the database migrations on staging."
+$ quicknote -n "Check the database migrations on staging."
 
 # Execute a command, capture the output, and save it as a new note
-$ qnote -c "ls -la /var/log"
+$ quicknote -c "ls -la /var/log"
 ```
 
 ### Piping Data (Stdin)
 Quicknote smoothly ingests standard output from other Unix tools.
 ```bash
 # Save a server error log to a quick note titled "Panic Log"
-$ cat error.log | grep "panic" | qnote -t "Panic Log"
+$ cat error.log | grep "panic" | quicknote -t "Panic Log"
 
 # Save a curled JSON payload quietly in the background
-$ curl [https://api.github.com/users/torvalds](https://api.github.com/users/torvalds) | qnote -q
+$ curl [https://api.github.com/users/torvalds](https://api.github.com/users/torvalds) | quicknote -q
 ```
 
 <details>
@@ -136,7 +136,7 @@ Ensure you have Go 1.20+ installed.
 git clone [https://github.com/yourusername/quicknote-tui.git](https://github.com/yourusername/quicknote-tui.git)
 cd quicknote-tui
 go build -ldflags="-s -w" -o quicknote .
-sudo mv qnote /usr/local/bin/
+sudo mv quicknote /usr/local/bin/
 ```
 
 Quicknote will automatically create its lightweight SQLite database in `~/.local/share/quicknote-tui/` on first run.
