@@ -135,7 +135,7 @@ Ensure you have Go 1.20+ installed.
 ```bash
 git clone [https://github.com/yourusername/quicknote-tui.git](https://github.com/yourusername/quicknote-tui.git)
 cd quicknote-tui
-go build -ldflags="-s -w" -o qnote .
+go build -ldflags="-s -w" -o quicknote .
 sudo mv qnote /usr/local/bin/
 ```
 
