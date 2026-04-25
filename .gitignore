@@ -4,3 +4,5 @@ quicknote.exe
 
 # Ignore Mac system files (if you are on a Mac)
 .DS_Store
+debug.log
+.gitignore
