@@ -71,6 +71,7 @@ type model struct {
 	highlightDirty  bool
 
 	needsSave bool
+	timerNow time.Time
 
 	searchResults []Note
 	searchIndex   int
@@ -184,6 +185,7 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 		state:          stateTyping,
 		showLineNums:   true,
 		viewportTop:    new(int),
+		timerNow:      startTime,
 		// Provide a fallback theme while loading
 		theme: Theme{BgDark: "#1E1E2E", TextLight: "#CDD6F4", AccentNormal: "#89B4FA"},
 		flashMsg:       fmt.Sprintf("Started in %.2fms", float64(time.Since(startTime).Nanoseconds())/1e6),
@@ -439,6 +441,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		m.timerNow = time.Time(msg)
 		cmds = append(cmds, tickCmd())
 		if m.needsSave && time.Since(m.lastActivity) > 2*time.Second {
 			if len(m.notes) > 0 && m.index < len(m.notes) && !m.notes[m.index].IsGhost {
@@ -1758,25 +1761,17 @@ func (m model) View() string {
 	}
 
 	killBlock := ""
-	if m.state != stateTrash {
-		hash, duration := getKillTimerInfo(currentText)
-
-		if m.notes[m.index].KillHash != hash {
-			m.notes[m.index].KillHash = hash
-			m.notes[m.index].KillStart = time.Now()
-		}
-
-		if duration != nil {
-			killAt := m.notes[m.index].KillStart.Add(*duration)
-			timeLeft := time.Until(killAt)
-			if timeLeft > 0 {
-				timeStr := formatKillTime(timeLeft)
+	if m.state != stateTrash && len(m.notes)>0 && m.index>=0 && m.index<len(m.notes) {
+		_, duration := getKillTimerInfo(currentText)
+		if duration != nil && !m.notes[m.index].KillStart.IsZero() {
+			remaining := m.notes[m.index].KillStart.Add(*duration).Sub(m.timerNow)
+			if remaining > 0 {
 				killBlock = lipgloss.NewStyle().
 					Background(bgDark).
 					Foreground(lipgloss.Color("#F38BA8")).
 					Bold(true).
 					Padding(0, 1).
-					Render(fmt.Sprintf("KILL: %s", timeStr))
+					Render(fmt.Sprintf("KILL: %s", formatKillTime(remaining)))
 			}
 		}
 	}
@@ -1968,7 +1963,7 @@ func (m model) View() string {
 	return fmt.Sprintf("%s\n%s", m.renderEditorView(), statusBar)
 }
 
-func (m *model) renderEditorView() string {
+func (m model) renderEditorView() string {
 	highlighted := m.cachedHighlight
 
 	charUnderCursor := " "
@@ -2062,11 +2057,13 @@ func (m *model) renderEditorView() string {
 		physicalLineIdx += len(physSegments)
 	}
 
+	top := 0
+	if m.viewportTop != nil { top = *m.viewportTop }
 	if !m.freeScroll {
-		if cursorPhysicalRow < *m.viewportTop {
-			*m.viewportTop = cursorPhysicalRow
-		} else if cursorPhysicalRow >= *m.viewportTop+m.viewport.Height {
-			*m.viewportTop = cursorPhysicalRow - m.viewport.Height + 1
+		if cursorPhysicalRow < top {
+			top = cursorPhysicalRow
+		} else if cursorPhysicalRow >= top+m.viewport.Height {
+			top = cursorPhysicalRow - m.viewport.Height + 1
 		}
 	}
 
@@ -2074,14 +2071,14 @@ func (m *model) renderEditorView() string {
 	if maxTop < 0 {
 		maxTop = 0
 	}
-	if *m.viewportTop > maxTop {
-		*m.viewportTop = maxTop
+	if top > maxTop {
+		top = maxTop
 	}
-	if *m.viewportTop < 0 {
-		*m.viewportTop = 0
+	if top < 0 {
+		top = 0
 	}
 
-	startRow := *m.viewportTop
+	startRow := top
 	if startRow < 0 {
 		startRow = 0
 	}
