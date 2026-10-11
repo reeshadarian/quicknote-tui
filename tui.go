@@ -101,7 +101,7 @@ func (m *model) stashNote() {
 func (m *model) activateNote() {
  if len(m.notes)==0 || m.index<0 || m.index>=len(m.notes) { return }
  n:=&m.notes[m.index]
- if n.ID>0 { n.Content=m.store.Get(n.ID) }
+ if n.ID>0 { n.Content=getNoteCompat(m.store,n.ID) }
  m.buffer=stringToBuffer(n.Content)
  m.cursorRow,m.cursorCol,m.virtualPhysCol=0,0,0
  m.undoStack,m.redoStack=nil,nil
@@ -206,7 +206,7 @@ func (m model) Init() tea.Cmd {
 		if len(notes) == 0 {
 			notes = []Note{{ID: 0, Content: "", Preview: ""}}
 		} else if notes[0].ID > 0 {
-			notes[0].Content = m.store.Get( notes[0].ID)
+			notes[0].Content = getNoteCompat(m.store, notes[0].ID)
 		}
 		
 		return initDataMsg{theme: theme, notes: notes}
@@ -246,7 +246,7 @@ func (m model) reload() model {
 
 	if len(m.notes) > 0 {
 		if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-			m.notes[m.index].Content = m.store.Get( m.notes[m.index].ID)
+			m.notes[m.index].Content = getNoteCompat(m.store, m.notes[m.index].ID)
 		}
 		m.buffer = stringToBuffer(m.notes[m.index].Content)
 		m.cursorRow, m.cursorCol = 0, 0
@@ -396,7 +396,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.index = len(m.notes) - 1
 				}
 				if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-					m.notes[m.index].Content = m.store.Get( m.notes[m.index].ID)
+					m.notes[m.index].Content = getNoteCompat(m.store, m.notes[m.index].ID)
 				}
 				m.buffer = stringToBuffer(m.notes[m.index].Content)
 				m.cursorRow, m.cursorCol = 0, 0
@@ -767,7 +767,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.index < len(m.notes)-1 {
 					m.index++
 					if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-						m.notes[m.index].Content = m.store.Get( m.notes[m.index].ID)
+						m.notes[m.index].Content = getNoteCompat(m.store, m.notes[m.index].ID)
 					}
 					m.buffer = stringToBuffer(m.notes[m.index].Content)
 					clampCursor()
@@ -778,7 +778,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.index > 0 {
 					m.index--
 					if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-						m.notes[m.index].Content = m.store.Get( m.notes[m.index].ID)
+						m.notes[m.index].Content = getNoteCompat(m.store, m.notes[m.index].ID)
 					}
 					m.buffer = stringToBuffer(m.notes[m.index].Content)
 					clampCursor()
