@@ -73,7 +73,6 @@ func TestSyntheticNoteSaveAndOrdinaryTrash(t *testing.T) {
 // QN-005 / T-05: activate this known-failing regression after fixing
 // duplicate trash handling. A failing assertion is kept, not weakened.
 func TestRegressionDuplicateTrashPreservesBothNotes(t *testing.T) {
-    t.Skip("KNOWN FAILURE QN-005: trashNote hard-deletes duplicates; enable after fix")
     db := newTestDB(t)
     first := insertTestNote(t,db,"same content")
     second := insertTestNote(t,db,"same content")
@@ -82,4 +81,34 @@ func TestRegressionDuplicateTrashPreservesBothNotes(t *testing.T) {
     var count int
     if err:=db.QueryRow("SELECT count(*) FROM notes WHERE id IN (?,?) AND deleted_at IS NOT NULL",first,second).Scan(&count); err!=nil { t.Fatal(err) }
     if count!=2 { t.Fatalf("retained trashed duplicates = %d; want 2",count) }
+}
+
+func TestQN005DuplicateTrashSurvivesDatabaseRestart(t *testing.T) {
+ db:=newTestDB(t)
+ first:=insertTestNote(t,db,"duplicate")
+ second:=insertTestNote(t,db,"duplicate")
+ trashNote(db,first)
+ trashNote(db,second)
+ // Startup cleanup must not deduplicate unexpired trashed content.
+ // Call the same database initializer using the temporary HOME from newTestDB.
+ restarted:=initDB()
+ defer restarted.Close()
+ var count int
+ if err:=restarted.QueryRow("SELECT count(*) FROM notes WHERE id IN (?,?) AND deleted_at IS NOT NULL",first,second).Scan(&count);err!=nil {t.Fatal(err)}
+ if count!=2 {t.Fatalf("restart retained %d of 2 duplicated notes",count)}
+ restoreNote(restarted,first)
+ if got:=loadNoteContent(restarted,first);got!="duplicate" {t.Fatalf("restore failed: %q",got)}
+}
+func TestQN005OnlyExpiredTrashPurged(t *testing.T) {
+ db:=newTestDB(t)
+ fresh:=insertTestNote(t,db,"fresh")
+ old:=insertTestNote(t,db,"old")
+ trashNote(db,fresh)
+ trashNote(db,old)
+ if _,err:=db.Exec("UPDATE notes SET deleted_at = datetime('now','-4 days') WHERE id = ?",old);err!=nil{t.Fatal(err)}
+ reopened:=initDB()
+ defer reopened.Close()
+ var count int
+ if err:=reopened.QueryRow("SELECT count(*) FROM notes WHERE id IN (?,?)",fresh,old).Scan(&count);err!=nil {t.Fatal(err)}
+ if count!=1 {t.Fatalf("expected only fresh trash after maintenance, got %d",count)}
 }
