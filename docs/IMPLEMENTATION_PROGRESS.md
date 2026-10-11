@@ -103,3 +103,21 @@ The full 48-task specification was delivered separately as the Quicknote v2 impl
 **Verification:** GitHub combined commit status query for previous head returned no statuses. Test source has been committed but this environment has not run `go test ./...`, `go vet ./...`, `go build ./...`, or the `-q` subprocess stdout/stderr and exit-status tests. QN-008 is not marked DONE until those execute successfully.
 
 **Next:** obtain passing Go 1.25.9 CI/test logs, add an end-to-end subprocess assertion for strict `-q` stdout (T-12), and only then begin the P1 typed Store API (QN-009). `main` remains unchanged.
+
+
+## QN-009 and QN-010 — Store extraction and v2 migration (2026-10-11)
+
+**QN-009: REVIEW (not verified or fully hardened).**
+- `c4bf4da1`: Introduced typed NoteStore and SQLiteStore CRUD facade.
+- `ac13f635`, `beae420b`, `f0ff21af`: TUI routes note reads/search/list/save/trash/restore/purge through NoteStore; no direct `m.db` access remains. Transitional adapters allow old UI handlers to continue operating, but they still suppress some failures. These must be removed to meet full error-propagation criteria.
+
+**QN-010: REVIEW (not verified).**
+- `304a32ab`: Added schema revision 2 migration with `revision`, `expires_at`, `is_pinned` and indexes; existing v1 DB gets a consistent `VACUUM INTO` backup before v2 DDL. Migration checks column presence and is safe to re-open.
+- `8938be1e`: Repairs missing legacy FTS triggers and backfills missing FTS entries.
+- `87ac2ab3`: Updated baseline fixture expectation to schema 2.
+- `91e0c433`: Added typed store CRUD and v1-to-v2 backup/migration/idempotency regression tests.
+- `d1c2dd61`: Wrote `docs/LOCAL_TESTING.md` with Fedora commands and isolated test HOME.
+
+**Verification:** All changes committed to `dev/v2`; remote CI checks have not reported a passing result. This execution environment has Go 1.23.2 and cannot reach github.com, so `go test`, build, vet, and race checks are **not run**. Run the local commands in `docs/LOCAL_TESTING.md` and resolve any failures before marking these as DONE.
+
+**Remaining risk:** v2 fields are schema preparation only; QN-011 must implement optimistic revision-based updates. Cross-process reconciliation, all UI errors, and broader legacy repair need subsequent work. Do not run a migration against production data before a clean local fixture test.
