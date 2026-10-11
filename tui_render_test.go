@@ -3,7 +3,6 @@ package main
 import (
  "testing"
  "time"
- tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestQN007RenderingDoesNotResetKillTimer(t *testing.T) {
@@ -46,5 +45,4 @@ func TestQN007TickClockUpdate(t *testing.T) {
  changed,_:=m.Update(tickMsg(at))
  got:=changed.(model)
  if !got.timerNow.Equal(at) {t.Fatalf("timer clock=%s want %s",got.timerNow,at)}
- _ = tea.WindowSizeMsg{} // ensure the tea import stays linked to the model dependency
 }
