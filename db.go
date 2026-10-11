@@ -158,6 +158,10 @@ func initDB() *sql.DB {
 	for _, statement := range triggers {
 		if _, err = db.Exec(statement); err != nil { log.Fatalf("FTS repair: %v", err) }
 	}
+	// Backfill rows missing from an interrupted legacy FTS initialization.
+	if _, err = db.Exec("INSERT INTO notes_fts(rowid, content) SELECT n.id, n.content FROM notes n WHERE NOT EXISTS (SELECT 1 FROM notes_fts f WHERE f.rowid = n.id)"); err != nil {
+		log.Fatalf("FTS backfill: %v", err)
+	}
 		// Retain every trashed note, including identical copies, for 72 full hours.
 	// This comparison uses timestamps rather than calendar-day truncation.
 	if _, err = db.Exec("DELETE FROM tags WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime('now', '-3 days'))"); err != nil {
