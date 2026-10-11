@@ -48,7 +48,7 @@ func TestSyntheticDatabaseIsolationAndFTS(t *testing.T) {
     db := newTestDB(t)
     var version int
     if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil { t.Fatal(err) }
-    if version != 1 { t.Fatalf("baseline schema version = %d; want 1", version) }
+    if version != 2 { t.Fatalf("schema version = %d; want 2", version) }
     id := insertTestNote(t, db, "uniquebaselinekeyword")
     var indexed int
     if err := db.QueryRow("SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'uniquebaselinekeyword'").Scan(&indexed); err != nil { t.Fatal(err) }
