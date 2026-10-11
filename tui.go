@@ -909,9 +909,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			goto Finalize
 
 		case "ctrl+f":
-			m.stashNote()
 			m.notes[m.index].Content = bufferToString(m.buffer)
 			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+			m.needsSave = false
+			m.stashNote()
 			m.prevState = m.state
 			m.state = stateSearch
 			m.searchInput.Focus()
