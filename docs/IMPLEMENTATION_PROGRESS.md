@@ -80,3 +80,15 @@ The full 48-task specification was delivered separately as the Quicknote v2 impl
 **Verification:** Source commits confirmed on `dev/v2`. This session did not complete `go test ./...` or `go vet ./...`: executable checkout and Go 1.25.9 dependencies unavailable in the execution environment. GitHub combined-status responses previously contained no statuses; no green checks claimed. QN-005 and QN-006 are **implemented, verification pending**.
 
 **Open follow-up:** Some legacy `saveNote` paths still use the non-error-returning compatibility wrapper; migrate them to checked calls as part of QN-013 unified navigation/persistence. Startup schema/PRAGMA error handling and transactional housekeeping need a separate migration hardening task. Inspect CI results and address any compile/test failures before marking these tasks verified.
+
+
+## QN-007 — Pure rendering and timers (2026-10-11)
+
+**REVIEW — implementation committed; test verification pending.**
+
+- `14b5028c`: removed KillStart writes and wall-clock reads from `View()`; expiration display now uses a model-owned `timerNow` clock updated by tick messages. `renderEditorView()` now uses a value receiver and adjusts a local scroll-top value instead of writing through the shared viewport-top pointer.
+- `23846c3b`, `75f90083`: added `tui_render_test.go` covering repeated deterministic rendering, no KillStart reset, no shared viewport movement, and clock update by tick.
+
+**Verification attempt:** GitHub combined status for `65ec80f` contained no statuses. Local environment is Go 1.23.2 (project requires Go 1.25.9); `git ls-remote` fails because github.com does not resolve. Therefore tests and CI remain **unverified**, not passed.
+
+**Known follow-up:** The model's `Update()` function still owns real-time expiry evaluation and scroll adjustments; it must remain the sole transition path. Rendering currently computes its own local scroll offset but does not persist this offset until a subsequent model update. Review T-08 and T-13 against actual CI. Continue QN-008 after verification. `main` was not modified.
