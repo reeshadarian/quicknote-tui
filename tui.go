@@ -602,7 +602,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.flashMsg = "Note no longer available"
 						goto Finalize
 					}
-					m.stashNote()
 					m.index = foundIndex
 					m.activateNote()
 					m.highlightDirty = true
@@ -614,6 +613,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchQuery = ""
 					m.searchInput.Reset()
 
+					if _, resumed := m.drafts[selectedNote.ID]; !resumed {
 					m.cursorRow = selectedNote.MatchRow
 					if m.cursorRow < 0 || m.cursorRow >= len(m.buffer) {
 						m.cursorRow = 0
@@ -626,6 +626,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.virtualPhysCol = m.cursorCol
 					*m.viewportTop = m.cursorRow - (m.viewport.Height / 2)
 					if *m.viewportTop < 0 { *m.viewportTop = 0 }
+					}
 				}
 
 			default:
