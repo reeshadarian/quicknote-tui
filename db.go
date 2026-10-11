@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -305,16 +306,12 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 	return notes
 }
 
-func saveNote(db *sql.DB, n Note) Note {
-	if n.ID == -1 { return n }
-	if n.Content == "" && n.ID == 0 { return n }
-	if n.IsGhost { return n }
-	
-	killStartStr := ""
-	if !n.KillStart.IsZero() {
-		killStartStr = n.KillStart.Format(time.RFC3339)
-	}
-
+// saveNoteChecked atomically persists content and tags. On failure the
+// caller keeps its original note identity and its unsaved editor buffer.
+func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
+ if n.ID == -1 || (n.ID == 0 && n.Content == "") || n.IsGhost {return n,nil}
+ killStartStr:=""
+ if !n.KillStart.IsZero() {killStartStr=n.KillStart.Format(time.RFC3339)}
 	// 1. THE FIX: Protect database tag parsing from code blocks and comments!
 	reTags := regexp.MustCompile(`(?i)#[a-zA-Z0-9_-]+`)
 	tagMap := make(map[string]bool)
@@ -350,43 +347,46 @@ func saveNote(db *sql.DB, n Note) Note {
 		}
 	}
 
-	if n.ID == 0 {
-		res, err := db.Exec("INSERT INTO notes (content, kill_hash, kill_start) VALUES (?, ?, ?)", n.Content, n.KillHash, killStartStr)
-		if err == nil {
-			id, _ := res.LastInsertId()
-			n.ID = int(id)
-		}
-	} else {
-		_, _ = db.Exec("UPDATE notes SET content = ?, updated_at = CURRENT_TIMESTAMP, kill_hash = ?, kill_start = ? WHERE id = ?", n.Content, n.KillHash, killStartStr, n.ID)
-	}
+ tx,err:=db.Begin()
+ if err!=nil {return n,fmt.Errorf("begin save: %w",err)}
+ defer tx.Rollback()
+ if n.ID==0 {
+  var res sql.Result
+  res,err=tx.Exec("INSERT INTO notes(content, kill_hash, kill_start) VALUES(?,?,?)",n.Content,n.KillHash,killStartStr)
+  if err!=nil {return n,fmt.Errorf("insert note: %w",err)}
+  var id int64
+  id,err=res.LastInsertId()
+  if err!=nil {return n,fmt.Errorf("read new note ID: %w",err)}
+  n.ID=int(id)
+ } else {
+  var res sql.Result
+  res,err=tx.Exec("UPDATE notes SET content=?, updated_at=CURRENT_TIMESTAMP, kill_hash=?, kill_start=? WHERE id=? AND deleted_at IS NULL",n.Content,n.KillHash,killStartStr,n.ID)
+  if err!=nil {return n,fmt.Errorf("update note %d: %w",n.ID,err)}
+  affected,e:=res.RowsAffected()
+  if e!=nil {return n,fmt.Errorf("count updated rows: %w",e)}
+  if affected!=1 {return n,fmt.Errorf("note %d no longer active",n.ID)}
+ }
+ if _,err=tx.Exec("DELETE FROM tags WHERE note_id=?",n.ID);err!=nil {return n,fmt.Errorf("clear tags: %w",err)}
+ for _,tag:=range n.Tags {
+  if _,err=tx.Exec("INSERT INTO tags(note_id,tag) VALUES(?,?)",n.ID,tag);err!=nil {return n,fmt.Errorf("save tag %q: %w",tag,err)}
+ }
+ var duplicates int
+ if err=tx.QueryRow("SELECT count(*) FROM notes WHERE content=? AND id<>? AND deleted_at IS NULL",n.Content,n.ID).Scan(&duplicates);err!=nil {return n,fmt.Errorf("check duplicates: %w",err)}
+ if err=tx.Commit();err!=nil {return n,fmt.Errorf("commit note: %w",err)}
+ now:=time.Now()
+ n.UpdatedTime=now
+ n.UpdatedAt=now.Format("02 Jan 2006, 3:04 PM")
+ if n.CreatedTime.IsZero() {n.CreatedTime=now;n.CreatedAt=n.UpdatedAt}
+ n.IsDuplicate=duplicates>0
+ return n,nil
+}
 
-	if n.ID > 0 {
-		_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", n.ID)
-		for _, tag := range n.Tags {
-			_, _ = db.Exec("INSERT INTO tags (note_id, tag) VALUES (?, ?)", n.ID, tag)
-		}
-	}
-
-	n.UpdatedTime = time.Now()
-	n.UpdatedAt = n.UpdatedTime.Format("02 Jan 2006, 3:04 PM")
-	if n.CreatedTime.IsZero() {
-		n.CreatedTime = n.UpdatedTime
-		n.CreatedAt = n.UpdatedAt
-	}
-	n.UpdatedTime = time.Now()
-	n.UpdatedAt = n.UpdatedTime.Format("02 Jan 2006, 3:04 PM")
-	if n.CreatedTime.IsZero() {
-		n.CreatedTime = n.UpdatedTime
-		n.CreatedAt = n.UpdatedAt
-	}
-
-	// ADD THIS BLOCK BEFORE RETURNING:
-	// Detect if another active note has the exact same content
-	var dupCount int
-	_ = db.QueryRow("SELECT count(*) FROM notes WHERE content = ? AND id != ? AND deleted_at IS NULL", n.Content, n.ID).Scan(&dupCount)
-	n.IsDuplicate = (dupCount > 0)
-
-	return n
+// Legacy call sites can use this until their Update paths are converted to
+// explicit error handling. The checked API above is preferred.
+func saveNote(db *sql.DB,n Note) Note {
+ saved,err:=saveNoteChecked(db,n)
+ if err!=nil {log.Printf("quicknote: note save failed (id %d): %v",n.ID,err);return n}
+ return saved
 }
 
 // trashNote never deduplicates content: note IDs remain independently recoverable.
