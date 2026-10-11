@@ -59,3 +59,14 @@ func execNoteMutation(db *sql.DB,query string,id int) error {
  if n!=1{return fmt.Errorf("note %d not found or wrong state",id)}
  return nil
 }
+
+func getNoteCompat(s NoteStore,id int) string {
+ c,err:=s.Get(id)
+ if err!=nil {return ""}
+ return c
+}
+func saveNoteCompat(s NoteStore,n Note) Note {
+ saved,err:=s.Save(n)
+ if err!=nil {return n}
+ return saved
+}
