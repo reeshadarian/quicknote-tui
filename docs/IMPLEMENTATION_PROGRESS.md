@@ -92,3 +92,14 @@ The full 48-task specification was delivered separately as the Quicknote v2 impl
 **Verification attempt:** GitHub combined status for `65ec80f` contained no statuses. Local environment is Go 1.23.2 (project requires Go 1.25.9); `git ls-remote` fails because github.com does not resolve. Therefore tests and CI remain **unverified**, not passed.
 
 **Known follow-up:** The model's `Update()` function still owns real-time expiry evaluation and scroll adjustments; it must remain the sole transition path. Rendering currently computes its own local scroll offset but does not persist this offset until a subsequent model update. Review T-08 and T-13 against actual CI. Continue QN-008 after verification. `main` was not modified.
+
+
+## QN-008 — CLI quiet/error baseline (2026-10-11)
+
+**REVIEW — committed, execution verification pending.**
+- `d3434058`: `main.go` now exits silently for `-q` success, including empty input. stdin stat/read failures and failed `-c` commands terminate with nonzero exit codes rather than silently continuing. `persistCLIInput` performs transactional create/title/last append and returns lookup, scan, update, and commit errors.
+- `758fd614`: added `cli_test.go` covering title creation and append, last-note append, empty input, missing-last creation, injected SQLite failure with no partial persistence, and closed database errors.
+
+**Verification:** GitHub combined commit status query for previous head returned no statuses. Test source has been committed but this environment has not run `go test ./...`, `go vet ./...`, `go build ./...`, or the `-q` subprocess stdout/stderr and exit-status tests. QN-008 is not marked DONE until those execute successfully.
+
+**Next:** obtain passing Go 1.25.9 CI/test logs, add an end-to-end subprocess assertion for strict `-q` stdout (T-12), and only then begin the P1 typed Store API (QN-009). `main` remains unchanged.
