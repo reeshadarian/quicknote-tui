@@ -30,6 +30,9 @@ type Note struct {
 	MatchRow    int
 	MatchCol    int
 	IsDuplicate bool
+	Revision int64
+	ExpiresAt sql.NullString
+	IsPinned bool
 }
 
 func initDB() *sql.DB {
@@ -37,6 +40,8 @@ func initDB() *sql.DB {
 	_ = os.MkdirAll(dataDir, 0755)
 
 	dbPath := filepath.Join(dataDir, "notes.sqlite")
+	_, existingErr := os.Stat(dbPath)
+	wasExisting := existingErr == nil
 	db, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000")
 	if err != nil {
 		log.Fatal(err)
@@ -100,7 +105,60 @@ func initDB() *sql.DB {
 		_, _ = db.Exec("INSERT INTO notes_fts(rowid, content) SELECT id, content FROM notes")
 	}
 
-	// Retain every trashed note, including identical copies, for 72 full hours.
+	// v2 migration: snapshot the live SQLite database before any v2 DDL.
+	// VACUUM INTO creates a transactionally consistent backup, including WAL content.
+	var schemaVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil { log.Fatal(err) }
+	if schemaVersion > 2 { log.Fatalf("database schema version %d is newer than this Quicknote", schemaVersion) }
+	if schemaVersion < 2 {
+		if wasExisting {
+			backupPath := dbPath + ".pre-v2.bak"
+			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+				quoted := strings.ReplaceAll(backupPath, "'", "''")
+				if _, err := db.Exec("VACUUM INTO '" + quoted + "'"); err != nil { log.Fatalf("v2 backup failed; refusing migration: %v", err) }
+			} else if err != nil { log.Fatalf("inspect backup: %v", err) }
+		}
+		tx, err := db.Begin()
+		if err != nil { log.Fatal(err) }
+		fields := []string{
+			"ALTER TABLE notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+			"ALTER TABLE notes ADD COLUMN expires_at TEXT",
+			"ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
+		}
+		columns := make(map[string]bool)
+		rows, err := tx.Query("PRAGMA table_info(notes)")
+		if err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, kind string
+			var def sql.NullString
+			if err = rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil { break }
+			columns[name] = true
+		}
+		if err == nil { err = rows.Err() }
+		_ = rows.Close()
+		if err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		names := []string{"revision", "expires_at", "is_pinned"}
+		for i, statement := range fields {
+			if !columns[names[i]] {
+				if _, err = tx.Exec(statement); err != nil { _ = tx.Rollback(); log.Fatal(err) }
+			}
+		}
+		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_expiry_idx ON notes(expires_at) WHERE deleted_at IS NULL AND is_pinned = 0"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_deleted_at_idx ON notes(deleted_at)"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		if _, err = tx.Exec("PRAGMA user_version = 2"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		if err = tx.Commit(); err != nil { log.Fatal(err) }
+	}
+	// Repair interrupted FTS initialization without destroying note data.
+	triggers := []string{
+		"CREATE TRIGGER IF NOT EXISTS notes_fts_insert AFTER INSERT ON notes BEGIN INSERT INTO notes_fts(rowid,content) VALUES(NEW.id,NEW.content); END",
+		"CREATE TRIGGER IF NOT EXISTS notes_fts_delete AFTER DELETE ON notes BEGIN DELETE FROM notes_fts WHERE rowid=OLD.id; END",
+		"CREATE TRIGGER IF NOT EXISTS notes_fts_update AFTER UPDATE ON notes BEGIN UPDATE notes_fts SET content=NEW.content WHERE rowid=NEW.id; END",
+	}
+	for _, statement := range triggers {
+		if _, err = db.Exec(statement); err != nil { log.Fatalf("FTS repair: %v", err) }
+	}
+		// Retain every trashed note, including identical copies, for 72 full hours.
 	// This comparison uses timestamps rather than calendar-day truncation.
 	if _, err = db.Exec("DELETE FROM tags WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime('now', '-3 days'))"); err != nil {
 		log.Printf("quicknote: cleanup stale tags: %v", err)
