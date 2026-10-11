@@ -64,3 +64,19 @@ The full 48-task specification was delivered separately as the Quicknote v2 impl
 **Validation:** direct environment check: Go reports `go1.23.2 linux/amd64`; GitHub clone fails with `Could not resolve host: github.com`. Module requires Go 1.25.9. GitHub commit status endpoint returned no statuses for previous branch head. Tests not executed here; do not mark PASS.
 
 **Remaining work:** terminal-cell layout and mouse hit testing still assume rune positions in parts of `engine.go`/`tui.go`; full grapheme-safe vertical motion and rendering need further tests. No `main` changes.
+
+
+## QN-005 and QN-006 — Trash safety and transactional persistence (2026-10-11)
+
+**QN-005 implementation committed**
+- `2183df13`: Every normal trash operation is a soft delete, even when two notes have identical content. Startup cleanup no longer deduplicates trash. Cleanup uses a timestamp comparison for a full three-day retention period, with tag cleanup before note removal.
+- `8b057808`: Enabled the duplicate-trash regression; added restart-retention and expired-trash tests.
+
+**QN-006 implementation committed**
+- `4a9b296d`: Added `saveNoteChecked(db, note) (Note, error)`; note content, tags, and duplicate detection execute in one transaction. Missing/trashed note IDs cannot silently update unrelated content. Legacy `saveNote` still logs failure for call sites not yet migrated.
+- `560b016a` and `5492a7b`: Auto-save, Alt+Left/Alt+Right, and pending-draft search selection use the checked API, display a failure, and retain the dirty draft instead of navigating on a failed write.
+- `8a693c08`: Added rollback tests with deliberately failing tag trigger, ensuring content, tag metadata, FTS indexing, and failed note creation remain consistent.
+
+**Verification:** Source commits confirmed on `dev/v2`. This session did not complete `go test ./...` or `go vet ./...`: executable checkout and Go 1.25.9 dependencies unavailable in the execution environment. GitHub combined-status responses previously contained no statuses; no green checks claimed. QN-005 and QN-006 are **implemented, verification pending**.
+
+**Open follow-up:** Some legacy `saveNote` paths still use the non-error-returning compatibility wrapper; migrate them to checked calls as part of QN-013 unified navigation/persistence. Startup schema/PRAGMA error handling and transactional housekeeping need a separate migration hardening task. Inspect CI results and address any compile/test failures before marking these tasks verified.
