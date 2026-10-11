@@ -525,25 +525,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				
 			case "enter":
-				if len(m.searchResults) > 0 {
+				if m.searchIndex >= 0 && m.searchIndex < len(m.searchResults) {
 					selectedNote := m.searchResults[m.searchIndex]
-					m.buffer = stringToBuffer(selectedNote.Content)
-					m.cachedHighlight = computeHighlight(selectedNote.Content, m.theme)
-					m.state = stateTyping
-					m.searchInput.Reset()
-					
-					// Jump exactly to the matched line and column
-					m.cursorRow = selectedNote.MatchRow
-					m.cursorCol = selectedNote.MatchCol
-					m.virtualPhysCol = m.cursorCol // Remember column for up/down navigation
-					
-					// Scroll the viewport so the matched line is perfectly centered on screen
-					*m.viewportTop = m.cursorRow - (m.viewport.Height / 2)
-					if *m.viewportTop < 0 {
-						*m.viewportTop = 0
+					if selectedNote.ID <= 0 {
+						goto Finalize
 					}
+
+					// Search results are not the editor's authoritative note list.
+					// Save the current draft before replacing either its identity
+					// or its buffer. ctrl+f usually already saved it.
+					if m.prevState != stateTrash && m.needsSave && len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
+						current := m.notes[m.index]
+						current.Content = bufferToString(m.buffer)
+						if !current.IsGhost {
+							current = saveNote(m.db, current)
+						}
+						m.notes[m.index] = current
+						m.needsSave = false
+					}
+
+					inTrash := m.prevState == stateTrash
+					m.notes = loadNotes(m.db, inTrash)
+					foundIndex := -1
+					for i := range m.notes {
+						if m.notes[i].ID == selectedNote.ID {
+							foundIndex = i
+							break
+						}
+					}
+					if foundIndex < 0 {
+						m.flashMsg = "Note no longer available"
+						goto Finalize
+					}
+					m.index = foundIndex
+					// Retrieve by ID so the buffer and active identity always agree.
+					m.notes[m.index].Content = loadNoteContent(m.db, selectedNote.ID)
+					m.buffer = stringToBuffer(m.notes[m.index].Content)
+					m.undoStack, m.redoStack = nil, nil
+					m.needsSave = false
+					m.highlightDirty = true
+					m.cachedHighlight = computeHighlight(m.notes[m.index].Content, m.theme)
+					m.state = stateTyping
+					if inTrash {
+						m.state = stateTrash // A trashed note must never enter the editable state.
+					}
+					m.searchQuery = ""
+					m.searchInput.Reset()
+
+					m.cursorRow = selectedNote.MatchRow
+					if m.cursorRow < 0 || m.cursorRow >= len(m.buffer) {
+						m.cursorRow = 0
+					}
+					m.cursorCol = selectedNote.MatchCol
+					if m.cursorCol < 0 { m.cursorCol = 0 }
+					if m.cursorCol > len(m.buffer[m.cursorRow]) {
+						m.cursorCol = len(m.buffer[m.cursorRow])
+					}
+					m.virtualPhysCol = m.cursorCol
+					*m.viewportTop = m.cursorRow - (m.viewport.Height / 2)
+					if *m.viewportTop < 0 { *m.viewportTop = 0 }
 				}
-				
+
 			default:
 				prevVal := m.searchInput.Value()
 				m.searchInput, cmd = m.searchInput.Update(msg)
