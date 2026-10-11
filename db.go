@@ -99,17 +99,14 @@ func initDB() *sql.DB {
 		_, _ = db.Exec("INSERT INTO notes_fts(rowid, content) SELECT id, content FROM notes")
 	}
 
-	// 6. Maintenance: Permanently delete notes in the trash older than 3 days
-	_, _ = db.Exec("DELETE FROM notes WHERE deleted_at <= date('now', '-3 days')")
-
-	// 7. Maintenance: Deduplicate the trash (keeps the newest trashed note, deletes older duplicates)
-	_, _ = db.Exec(`
-		DELETE FROM notes 
-		WHERE deleted_at IS NOT NULL 
-		AND id NOT IN (
-			SELECT MAX(id) FROM notes WHERE deleted_at IS NOT NULL GROUP BY content
-		)
-	`)
+	// Retain every trashed note, including identical copies, for 72 full hours.
+	// This comparison uses timestamps rather than calendar-day truncation.
+	if _, err = db.Exec("DELETE FROM tags WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime('now', '-3 days'))"); err != nil {
+		log.Printf("quicknote: cleanup stale tags: %v", err)
+	}
+	if _, err = db.Exec("DELETE FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime('now', '-3 days')"); err != nil {
+		log.Printf("quicknote: cleanup expired trash: %v", err)
+	}
 
 	return db
 }
@@ -392,28 +389,11 @@ func saveNote(db *sql.DB, n Note) Note {
 	return n
 }
 
+// trashNote never deduplicates content: note IDs remain independently recoverable.
 func trashNote(db *sql.DB, id int) {
-	// 1. Get the content of the note being trashed
-	var content string
-	err := db.QueryRow("SELECT content FROM notes WHERE id = ?", id).Scan(&content)
-	if err != nil {
-		return 
-	}
-
-	// 2. Check if ANY duplicate exists (active or trashed)
-	var duplicateCount int
-	_ = db.QueryRow("SELECT count(*) FROM notes WHERE content = ? AND id != ?", content, id).Scan(&duplicateCount)
-
-	// 3. If a duplicate note is trashed, it should be permanently deleted
-	if duplicateCount > 0 {
-		hardDeleteNote(db, id)
-		return
-	}
-
-	// 4. Otherwise, soft delete it normally
-	_, err = db.Exec("UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", id)
-	if err != nil {
-		log.Printf("Error trashing note: %v", err)
+	if id <= 0 { return }
+	if _, err := db.Exec("UPDATE notes SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP) WHERE id = ?", id); err != nil {
+		log.Printf("Error trashing note %d: %v", id, err)
 	}
 }
 
