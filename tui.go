@@ -1146,14 +1146,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "left":
 			if m.cursorCol > 0 {
-				m.cursorCol--
+				m.cursorCol = previousGraphemeBoundary(m.buffer[m.cursorRow], m.cursorCol)
 			} else if m.cursorRow > 0 {
 				m.cursorRow--
 				m.cursorCol = len(m.buffer[m.cursorRow])
 			}
 		case "right":
 			if m.cursorCol < len(m.buffer[m.cursorRow]) {
-				m.cursorCol++
+				m.cursorCol = nextGraphemeBoundary(m.buffer[m.cursorRow], m.cursorCol)
 			} else if m.cursorRow < len(m.buffer)-1 {
 				m.cursorRow++
 				m.cursorCol = 0
@@ -1280,8 +1280,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "backspace":
 			if m.cursorCol > 0 {
-				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol-1], m.buffer[m.cursorRow][m.cursorCol:]...)
-				m.cursorCol--
+				previous := previousGraphemeBoundary(m.buffer[m.cursorRow], m.cursorCol)
+				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:previous], m.buffer[m.cursorRow][m.cursorCol:]...)
+				m.cursorCol = previous
 			} else if m.cursorRow > 0 {
 				prevLen := len(m.buffer[m.cursorRow-1])
 				m.buffer[m.cursorRow-1] = append(m.buffer[m.cursorRow-1], m.buffer[m.cursorRow]...)
@@ -1292,7 +1293,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "delete":
 			if m.cursorCol < len(m.buffer[m.cursorRow]) {
-				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], m.buffer[m.cursorRow][m.cursorCol+1:]...)
+				next := nextGraphemeBoundary(m.buffer[m.cursorRow], m.cursorCol)
+				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], m.buffer[m.cursorRow][next:]...)
 			} else if m.cursorRow < len(m.buffer)-1 {
 				m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow], m.buffer[m.cursorRow+1]...)
 				m.buffer = append(m.buffer[:m.cursorRow+1], m.buffer[m.cursorRow+2:]...)
@@ -1510,9 +1512,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			clampCursor()
 
 		case "`":
-			line := string(m.buffer[m.cursorRow])
-			before := line[:m.cursorCol]
-			after := line[m.cursorCol:]
+			line := m.buffer[m.cursorRow]
+			before := string(line[:m.cursorCol])
+			after := string(line[m.cursorCol:])
 
 			if strings.HasSuffix(before, "``") {
 				before = strings.TrimSuffix(before, "``")
