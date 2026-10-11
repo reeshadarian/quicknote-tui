@@ -74,8 +74,53 @@ type model struct {
 
 	searchResults []Note
 	searchIndex   int
+	drafts map[int]noteSession
 }
 
+
+
+type noteSession struct {
+ content string
+ row, col, virtualCol, top int
+ undo, redo []textState
+ dirty bool
+}
+func (m *model) stashNote() {
+ if len(m.notes)==0 || m.index<0 || m.index>=len(m.notes) { return }
+ id:=m.notes[m.index].ID
+ if id<0 { return }
+ if m.drafts==nil { m.drafts=make(map[int]noteSession) }
+ top:=0
+ if m.viewportTop!=nil { top=*m.viewportTop }
+ m.drafts[id]=noteSession{content:bufferToString(m.buffer),
+ row:m.cursorRow,col:m.cursorCol,virtualCol:m.virtualPhysCol,top:top,
+ undo:append([]textState(nil),m.undoStack...),
+ redo:append([]textState(nil),m.redoStack...),dirty:m.needsSave}
+}
+func (m *model) activateNote() {
+ if len(m.notes)==0 || m.index<0 || m.index>=len(m.notes) { return }
+ n:=&m.notes[m.index]
+ if n.ID>0 { n.Content=loadNoteContent(m.db,n.ID) }
+ m.buffer=stringToBuffer(n.Content)
+ m.cursorRow,m.cursorCol,m.virtualPhysCol=0,0,0
+ m.undoStack,m.redoStack=nil,nil
+ m.needsSave=false
+ if m.viewportTop==nil { m.viewportTop=new(int) }
+ *m.viewportTop=0
+ if d,ok:=m.drafts[n.ID];ok {
+  m.buffer=stringToBuffer(d.content)
+  m.cursorRow,m.cursorCol,m.virtualPhysCol=d.row,d.col,d.virtualCol
+  m.undoStack=append([]textState(nil),d.undo...)
+  m.redoStack=append([]textState(nil),d.redo...)
+  m.needsSave=d.dirty
+  *m.viewportTop=d.top
+ }
+ if len(m.buffer)==0 { m.buffer=stringToBuffer("") }
+ if m.cursorRow<0 || m.cursorRow>=len(m.buffer) { m.cursorRow=0 }
+ if m.cursorCol<0 { m.cursorCol=0 }
+ if m.cursorCol>len(m.buffer[m.cursorRow]) { m.cursorCol=len(m.buffer[m.cursorRow]) }
+ m.highlightDirty=true
+}
 
 type tickMsg time.Time
 
@@ -557,12 +602,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.flashMsg = "Note no longer available"
 						goto Finalize
 					}
+					m.stashNote()
 					m.index = foundIndex
-					// Retrieve by ID so the buffer and active identity always agree.
-					m.notes[m.index].Content = loadNoteContent(m.db, selectedNote.ID)
-					m.buffer = stringToBuffer(m.notes[m.index].Content)
-					m.undoStack, m.redoStack = nil, nil
-					m.needsSave = false
+					m.activateNote()
 					m.highlightDirty = true
 					m.cachedHighlight = computeHighlight(m.notes[m.index].Content, m.theme)
 					m.state = stateTyping
@@ -866,6 +908,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			goto Finalize
 
 		case "ctrl+f":
+			m.stashNote()
 			m.notes[m.index].Content = bufferToString(m.buffer)
 			m.notes[m.index] = saveNote(m.db, m.notes[m.index])
 			m.prevState = m.state
@@ -994,17 +1037,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.needsSave = false
 			}
 			if m.index < len(m.notes)-1 {
+				m.stashNote()
 				m.index++
-				if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-					m.notes[m.index].Content = loadNoteContent(m.db, m.notes[m.index].ID)
-				}
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				m.cursorRow, m.cursorCol = 0, 0
-				m.virtualPhysCol = 0
-				*m.viewportTop = 0
-				m.undoStack, m.redoStack = nil, nil
+				m.activateNote()
 			}
-
 		case "alt+left":
 			if m.needsSave {
 				m.notes[m.index].Content = bufferToString(m.buffer)
@@ -1012,17 +1048,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.needsSave = false
 			}
 			if m.index > 0 {
+				m.stashNote()
 				m.index--
-				if m.notes[m.index].ID > 0 && m.notes[m.index].Content == "" {
-					m.notes[m.index].Content = loadNoteContent(m.db, m.notes[m.index].ID)
-				}
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				m.cursorRow, m.cursorCol = 0, 0
-				m.virtualPhysCol = 0
-				*m.viewportTop = 0
-				m.undoStack, m.redoStack = nil, nil
+				m.activateNote()
 			}
-
 		case "up", "down", "pgup", "pgdown":
 			gutterWidth := 0
 			if m.showLineNums {
