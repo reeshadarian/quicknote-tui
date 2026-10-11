@@ -51,3 +51,16 @@ The full 48-task specification was delivered separately as the Quicknote v2 impl
 **Testing attempted:** GitHub combined status check on previous head returned no statuses; commit workflow-run query returned no matching PR-triggered runs. Local `go version` is 1.23.2, lower than the module's Go 1.25.9 requirement, and the container cannot resolve github.com, preventing toolchain/dependency download or cloning. Consequently **none of `go test ./...`, `go vet ./...`, `go build ./...`, or `go test -race ./...` have been executed successfully**. Treat all test results as unverified.
 
 **Remaining QN-003 caveats:** state is currently scoped to the typing navigation/search paths; broader reload, new-note, Trash and delete transitions require the follow-on navigation abstraction QN-013. Existing `saveNote` silently ignores errors; QN-006 must make unsaved drafts recoverable on persistence failures. Do not mark QN-003 VERIFIED until the Go checks pass and T-03 has run.
+
+
+## QN-004 — Unicode-safe editing (2026-10-11)
+
+**Implementation committed; test verification pending.**
+
+- `a7b385c`: backtick auto-pairing now slices the rune buffer instead of indexing UTF-8 bytes; Left, Right, Backspace and Delete use grapheme cluster boundaries.
+- `1d02360`: introduced `unicode.go` with grapheme-boundary helpers using the existing `github.com/rivo/uniseg` dependency.
+- `77a9ec1`: added `unicode_test.go` for combining marks, CJK, ZWJ emoji, flags, multibyte backtick editing, and combining-sequence Backspace.
+
+**Validation:** direct environment check: Go reports `go1.23.2 linux/amd64`; GitHub clone fails with `Could not resolve host: github.com`. Module requires Go 1.25.9. GitHub commit status endpoint returned no statuses for previous branch head. Tests not executed here; do not mark PASS.
+
+**Remaining work:** terminal-cell layout and mouse hit testing still assume rune positions in parts of `engine.go`/`tui.go`; full grapheme-safe vertical motion and rendering need further tests. No `main` changes.
