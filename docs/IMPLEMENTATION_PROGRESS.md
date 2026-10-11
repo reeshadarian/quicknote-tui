@@ -29,3 +29,14 @@ Updated: 2026-10-11
 5. Keep work off `main` and record actual SHA and test evidence here.
 
 The full 48-task specification was delivered separately as the Quicknote v2 implementation pack; copy that pack into this repository before implementing downstream architecture milestones.
+
+
+## QN-002 — Search selection identity (2026-10-11)
+
+**Implementation committed**, verification pending:
+- `de5047680`: Resolve Enter search result via stable note ID in loaded list instead of changing only the editor buffer. Save any pending draft, fetch selected content by ID, clear undo/redo and stale save flags; clamp match cursor. Trash search remains read-only.
+- `96fd5762`: Enable the previously skipped identity regression and add tests for editing the correct note, dirty draft preservation, history reset, trash selection, and cursor bounds.
+
+**Known limitations:** SQLite `saveNote` still swallows write errors; transactional/error-aware persistence is a later task. A pending draft should not be discarded on DB failures; QN-003 should address this. Tests and CI have not yet been observed passing (local GitHub clone unavailable due network DNS). Do not mark VERIFIED without test output.
+
+**Next:** inspect CI, address any compile/test failures, then continue QN-003. No changes have been made to `main`.
