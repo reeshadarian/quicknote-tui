@@ -445,7 +445,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notes[m.index].Content = bufferToString(m.buffer)
 				
 				// 1. Save the note and check for duplicates
-				savedNote := saveNote(m.db, m.notes[m.index])
+				savedNote, saveErr := saveNoteChecked(m.db, m.notes[m.index])
+				if saveErr != nil {
+					m.flashMsg = "Save failed: " + saveErr.Error()
+					m.needsSave = true
+					goto Finalize
+				}
 				m.notes[m.index] = savedNote
 				m.needsSave = false
 				
@@ -1035,7 +1040,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "alt+right":
 			if m.needsSave {
 				m.notes[m.index].Content = bufferToString(m.buffer)
-				m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+				saved, err := saveNoteChecked(m.db, m.notes[m.index])
+				if err != nil {
+					m.flashMsg = "Save failed: " + err.Error()
+					goto Finalize // Keep editor, draft and note ID unchanged.
+				}
+				m.notes[m.index] = saved
 				m.needsSave = false
 			}
 			if m.index < len(m.notes)-1 {
@@ -1046,7 +1056,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "alt+left":
 			if m.needsSave {
 				m.notes[m.index].Content = bufferToString(m.buffer)
-				m.notes[m.index] = saveNote(m.db, m.notes[m.index])
+				saved, err := saveNoteChecked(m.db, m.notes[m.index])
+				if err != nil {
+					m.flashMsg = "Save failed: " + err.Error()
+					goto Finalize // Keep editor, draft and note ID unchanged.
+				}
+				m.notes[m.index] = saved
 				m.needsSave = false
 			}
 			if m.index > 0 {
