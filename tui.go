@@ -588,7 +588,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						current := m.notes[m.index]
 						current.Content = bufferToString(m.buffer)
 						if !current.IsGhost {
-							current = saveNote(m.db, current)
+							var saveErr error
+							current, saveErr = saveNoteChecked(m.db, current)
+							if saveErr != nil {
+								m.flashMsg = "Save failed: " + saveErr.Error()
+								goto Finalize
+							}
 						}
 						m.notes[m.index] = current
 						m.needsSave = false
