@@ -135,3 +135,10 @@ The maintainer ran `go test -count=1 -v ./...` and `go test -race -count=1 ./...
 **Important:** The test normalization does NOT establish that adding a trailing newline is intended editor behavior; investigate with a dedicated round-trip/cursor regression before labeling those paths complete.
 
 **Verification:** User-supplied logs establish the original failures and passing tests, not a new successful run after fixes. Current changes remain **REVIEW pending rerun**, no passing full suite or race suite claimed.
+
+
+## Verified local baseline — 2026-10-11
+
+Maintainer supplied Fedora terminal output after commit `7bccb94` showing **PASS** for `go test -count=1 -v ./...` (28 top-level tests, including QN-003/004/005/006/007/008/009/010) and **PASS** for `go test -race -count=1 ./...` (`ok quicknote 1.080s`). No test failures reported. `go vet` and `go build` were included in the previous requested command series but no separate explicit output was provided; treat those as not independently evidenced. Manual TUI scenarios and full end-to-end quiet-mode stdout checks remain pending.
+
+Next recommended task: QN-011 optimistic revision compare-and-swap, after ensuring the current implementation reads revisions from the store; preserve drafts on conflict. Keep all development changes on `dev/v2`.
