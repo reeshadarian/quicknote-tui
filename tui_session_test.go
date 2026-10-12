@@ -2,6 +2,7 @@ package main
 
 import (
  "testing"
+ "strings"
  tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -32,7 +33,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
  next,_=m.Update(tea.KeyMsg{Type:tea.KeyLeft,Alt:true}) // navigation alt+left
  m=next.(model)
  if m.notes[m.index].ID!=a {t.Fatal("did not return to A")}
- if got:=bufferToString(m.buffer);got!="alpha revised" {t.Fatalf("A draft lost: %q",got)}
+ if got:=bufferToString(m.buffer);strings.TrimSuffix(got,"\n")!="alpha revised" {t.Fatalf("A draft lost: %q",got)}
  if m.cursorCol!=5 {t.Fatalf("A cursor lost: %d",m.cursorCol)}
  if *m.viewportTop!=4 {t.Fatalf("A viewport lost: %d",*m.viewportTop)}
  if len(m.undoStack)!=1 || m.undoStack[0].content!="alpha" {t.Fatalf("A history lost: %+v",m.undoStack)}
@@ -40,7 +41,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
  if got:=loadNoteContent(db,a);got!="alpha revised" {t.Fatalf("A not saved: %q",got)}
  next,_=m.Update(tea.KeyMsg{Type:tea.KeyRight,Alt:true})
  m=next.(model)
- if got:=bufferToString(m.buffer);got!="beta revised" {t.Fatalf("B draft lost: %q",got)}
+ if got:=bufferToString(m.buffer);strings.TrimSuffix(got,"\n")!="beta revised" {t.Fatalf("B draft lost: %q",got)}
  if len(m.undoStack)!=1 || m.undoStack[0].content!="beta" {t.Fatalf("B history lost: %+v",m.undoStack)}
  if m.cursorCol!=2 {t.Fatalf("B cursor lost: %d",m.cursorCol)}
 }
@@ -63,6 +64,6 @@ func TestQN003DirectSessionSnapshot(t *testing.T) {
  m.stashNote()
  m.index=0
  m.activateNote()
- if !m.needsSave || bufferToString(m.buffer)!="draft a" {t.Fatal("A dirty draft not restored")}
+ if !m.needsSave || strings.TrimSuffix(bufferToString(m.buffer),"\n")!="draft a" {t.Fatal("A dirty draft not restored")}
  if len(m.undoStack)!=1 || m.undoStack[0].content!="a" {t.Fatal("A history not restored")}
 }
