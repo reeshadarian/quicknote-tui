@@ -136,6 +136,9 @@ func actionRegistry() []Action {
 	search := []appState{stateSearch}
 	conflict := []appState{stateConflict}
 	a := []Action{
+		makeAction("confirmation.cancel", "Cancel confirmation", "Keep the original draft and action unchanged", "Confirmation", []appState{stateConfirm}, "esc", "ctrl+c"),
+		makeAction("confirmation.choose", "Choose confirmation", "Change the default Cancel selection", "Confirmation", []appState{stateConfirm}, "tab", "left", "right"),
+		makeAction("confirmation.accept", "Accept selected choice", "Run only the explicitly selected confirmation", "Confirmation", []appState{stateConfirm}, "enter"),
 		makeAction("commands.open", "Commands", "Open the basic command menu (fuzzy palette is QN-023)", "Application", []appState{stateTyping, stateTrash, stateHelp}),
 		makeAction("keyboard.profile", "Switch keyboard profile", "Switch default/legacy profile and save keyboard.json", "Settings", nav),
 		makeAction("note.new", "New note", "Create a titleless scratch draft", "Note", edit, "ctrl+n"),
@@ -151,7 +154,7 @@ func actionRegistry() []Action {
 		makeAction("trash.close", "Return to notes", "Leave read-only Trash", "Navigation", []appState{stateTrash}, "esc", "ctrl+t"),
 		makeAction("note.next", "Next note", "Open the next stable note identity", "Navigation", nav, "alt+right"),
 		makeAction("note.previous", "Previous note", "Open the previous stable note identity", "Navigation", nav, "alt+left"),
-		makeAction("help.open", "Help and shortcuts", "Show commands from the action registry", "Help", nav, "f1"),
+		makeAction("help.open", "Help and shortcuts", "Show commands from the action registry", "Help", []appState{stateTyping, stateTrash, stateSearch, statePromptFile, statePipe}, "f1"),
 		makeAction("help.close", "Close help", "Restore the previous editor or overlay", "Help", []appState{stateHelp}, "esc", "ctrl+c", "enter", "f1"),
 		makeAction("view.lines", "Toggle line numbers", "Change the editor gutter", "View", edit, "f2"),
 		makeAction("app.exit", "Exit safely", "Wait for saves and preserve failed drafts", "Application", edit, "esc", "ctrl+c"),
@@ -188,6 +191,25 @@ func actionRegistry() []Action {
 		a = append(a, makeAction("cursor."+key, "Move "+key, "Move cursor using source coordinates", "Cursor", edit, key))
 	}
 	a = append(a, makeAction("cursor.start", "Line start", "Move to first non-space or start", "Cursor", edit, "ctrl+a"), makeAction("cursor.smartEnd", "Line end", "Move to wrapped/logical end", "Cursor", edit, "ctrl+e"))
+
+	for _, planned := range []struct {
+		id, title, description, category, task string
+		states                                 []appState
+	}{
+		{"ghost.new", "New ghost draft", "Create a memory-only draft", "Note", "QN-031", edit},
+		{"ttl.set", "Set expiration", "Choose a durable expiration preset", "Lifecycle", "QN-029", edit},
+		{"note.pin", "Pin or unpin", "Control automatic expiration", "Lifecycle", "QN-030", edit},
+		{"trash.deleteForever", "Delete forever", "Confirm permanently deleting this Trash entry", "Note", "QN-032", []appState{stateTrash}},
+		{"view.sidebar", "Toggle sidebar", "Show recent notes and tags", "View", "QN-024", nav},
+		{"theme.pick", "Change theme", "Preview and choose a validated theme", "Settings", "QN-033", nav},
+		{"view.motion", "Reduce motion", "Control optional UI transitions", "Settings", "QN-037", nav},
+		{"notes.switcher", "Quick switcher", "Find and open a recent stable note ID", "Navigation", "QN-022", nav},
+	} {
+		future := makeAction(planned.id, planned.title, planned.description, planned.category, planned.states)
+		task := planned.task
+		future.Enabled = func(ActionContext) (bool, string) { return false, "Planned in " + task }
+		a = append(a, future)
+	}
 	for i := range a {
 		if a[i].ID == "note.restore" {
 			a[i].Enabled = func(c ActionContext) (bool, string) {

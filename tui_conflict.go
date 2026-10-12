@@ -11,12 +11,18 @@ func (m *model) recordSaveError(err error) {
 	m.needsSave = true
 	m.flashMsg = "Save failed: " + err.Error()
 	if errors.Is(err, ErrConflict) || errors.Is(err, ErrTrashed) || errors.Is(err, ErrNotFound) {
-		m.state = stateConflict
+		if m.state != stateConflict {
+			m.overlays = nil
+			m.state = stateTyping
+			m.pushOverlay(stateConflict)
+		}
 		m.confirmReload = false
 		m.conflictTop = 0
 		m.conflictInspect = false
 		m.conflictRemote = Note{}
 		m.conflictReadErr = fmt.Errorf("loading stored version")
+	} else {
+		m.showError("Save failed", err)
 	}
 	// Store the base revision with the failed buffer, never adopt the remote
 	// revision while retaining local text: doing so would bypass CAS on retry.
@@ -26,7 +32,7 @@ func (m *model) recordSaveError(err error) {
 func (m *model) handleConflictKey(key string) {
 	switch key {
 	case "esc":
-		m.state = stateTyping // Keep editing, with a persistent conflict status.
+		m.popOverlay() // Keep editing, with a persistent conflict status.
 		m.confirmReload = false
 	case "i":
 		m.confirmReload = false
@@ -80,7 +86,7 @@ func (m model) conflictBody() string {
 
 func (m model) conflictView() string {
 	title := "Conflict: draft kept"
-	footer := "C Copy | R Reload\nI Compare | Esc Edit"
+	footer := fmt.Sprintf("%s Copy | %s Reload\n%s Compare | Esc Edit", m.shortcut("conflict.copy"), m.shortcut("conflict.reload"), m.shortcut("conflict.compare"))
 	if m.copyPending {
 		title = "Saving copy…"
 		footer = "Esc Keep editing"

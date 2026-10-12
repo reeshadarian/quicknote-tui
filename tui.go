@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -27,6 +26,7 @@ const (
 	statePipe
 	stateConflict
 	stateCommands
+	stateConfirm
 )
 
 type textState struct {
@@ -36,7 +36,10 @@ type textState struct {
 }
 
 type model struct {
-	windowHeight int
+	overlays         []OverlayFrame
+	confirmation     Confirmation
+	exportGeneration uint64
+	windowHeight     int
 	EditorDraft
 	keymap             Keymap
 	keyboardGeneration uint64
@@ -317,13 +320,11 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == statePipe {
 			switch msg.String() {
 			case "esc", "ctrl+c":
-				m.state = stateTyping
+				m.popOverlay()
 				m.pipeInput.SetValue("")
 			case "enter":
 				cmdStr := strings.TrimSpace(m.pipeInput.Value())
 				if cmdStr != "" {
-					m.undoStack = pushStack(m.undoStack, bufferToString(m.buffer), m.cursorRow, m.cursorCol)
-					m.redoStack = nil
 
 					lines := strings.Split(bufferToString(m.buffer), "\n")
 					var headerLines []string
@@ -345,9 +346,6 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 					out, err := cmdExc.CombinedOutput()
 
 					if err != nil {
-						if len(m.undoStack) > 0 {
-							m.undoStack = m.undoStack[:len(m.undoStack)-1]
-						}
 						errMsg := strings.TrimSpace(string(out))
 						if errMsg == "" {
 							errMsg = err.Error()
@@ -356,20 +354,22 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if len(errMsg) > 55 {
 							errMsg = errMsg[:52] + "..."
 						}
-						m.flashMsg = "Err: " + errMsg
+						m.showError("Filter failed", fmt.Errorf("%s", errMsg))
 					} else {
 						finalText := string(out)
 						finalText = strings.TrimRight(finalText, "\n")
 						if len(headerLines) > 0 {
 							finalText = strings.Join(headerLines, "\n") + "\n" + finalText
 						}
-						m.buffer = stringToBuffer(finalText)
-						m.cursorRow, m.cursorCol = 0, 0
+						m.popOverlay()
+						m.confirm("replace", "Replace draft with filter output?", finalText, finalText)
 						m.virtualPhysCol = 0
-						m.flashMsg = "Filtered!"
+						m.flashMsg = "Filter output ready"
 					}
 				}
-				m.state = stateTyping
+				if m.state == statePipe {
+					m.popOverlay()
+				}
 				m.pipeInput.SetValue("")
 			default:
 				m.pipeInput, cmd = m.pipeInput.Update(msg)
@@ -383,7 +383,7 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateHelp {
 			switch msg.String() {
 			case "esc", "ctrl+c", "enter", "f1":
-				m.state = m.prevState
+				m.popOverlay()
 			case "up", "down", "pgup", "pgdown":
 				m.viewport, cmd = m.viewport.Update(msg)
 				if cmd != nil {
@@ -404,24 +404,20 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == statePromptFile {
 			switch msg.String() {
 			case "esc", "ctrl+c":
-				m.state = stateTyping
-				m.fileInput.SetValue("")
+				m.exportGeneration++
+				m.popOverlay()
+				m.fileInput.Reset()
 			case "enter":
-				path := m.fileInput.Value()
-				if path != "" {
-					if strings.HasPrefix(path, "~/") {
-						home, _ := os.UserHomeDir()
-						path = strings.Replace(path, "~", home, 1)
-					}
-					_ = os.WriteFile(path, []byte(bufferToString(m.buffer)), 0644)
+				if m.fileInput.Value() != "" {
+					cmds = append(cmds, m.checkExport(m.fileInput.Value()))
 				}
-				m.state = stateTyping
-				m.fileInput.SetValue("")
 			default:
+				old := m.fileInput.Value()
 				m.fileInput, cmd = m.fileInput.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
+				if old != m.fileInput.Value() {
+					m.exportGeneration++
 				}
+				cmds = append(cmds, cmd)
 			}
 			goto Finalize
 		}
@@ -483,7 +479,7 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			copyToClipboard(bufferToString(m.buffer))
 			m.flashMsg = "Copied!"
 		case "alt+x":
-			m.state = statePipe
+			m.pushOverlay(statePipe)
 			m.pipeInput.SetValue("")
 			m.pipeInput.Focus()
 			cmds = append(cmds, textinput.Blink)
@@ -1002,6 +998,8 @@ func (m model) View() string {
 		m.Note = cloneNote(m.notes[m.index])
 	}
 	switch m.state {
+	case stateConfirm:
+		return m.confirmationView()
 	case stateCommands:
 		return m.commandView()
 	case stateConflict:
@@ -1040,7 +1038,13 @@ func (m model) View() string {
 	if l.Height <= 1 {
 		return clipFrame(editor, l.Width, 1)
 	}
-	status := fmt.Sprintf("[%s] Ln %d Col %d · Ctrl+K Commands", m.saveStatus(), m.cursorRow+1, m.cursorCol+1)
+	status := fmt.Sprintf("[%s] Ln %d Col %d · %s Commands", m.saveStatus(), m.cursorRow+1, m.cursorCol+1, m.shortcut("commands.open"))
+	if _, duration := getKillTimerInfo(m.buffer.Text()); duration != nil && !m.Note.KillStart.IsZero() && m.state != stateTrash {
+		remaining := m.Note.KillStart.Add(*duration).Sub(m.timerNow)
+		if remaining > 0 {
+			status = "Expires in " + formatKillTime(remaining) + " · " + status
+		}
+	}
 	if m.state == stateTrash {
 		status = "Trash · Ctrl+R Restore · Esc Back"
 	}

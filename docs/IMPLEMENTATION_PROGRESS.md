@@ -1,10 +1,10 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
+Latest implementation SHA: QN017_SHA_PENDING
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-016 — DONE; next QN-017
-Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
+Current task: QN-013–QN-017 DONE; next READY QN-048 (outside requested range)
+Updated: 2026-10-12 UTC
 
 ## Completed repository changes
 
@@ -305,6 +305,25 @@ PASS full suite/race/vet/build/diff checks with Go 1.25.9, CGO, sqlite_fts5; com
 
 ## QN-016 — Shared responsive Unicode/cell layout (2026-10-12)
 
-**DONE**, commit QN016_SHA_PENDING. `layout.go`/`layout_test.go` provide one immutable grapheme/cell/source-row layout for wrapping, cursor placement, vertical movement and mouse hit testing. Tabs display at four-cell stops without changing bytes; combining/ZWJ clusters are never split; over-wide clusters have a one-cell display fallback. Render only viewport rows from the physical source layout, retain ANSI syntax styling when it matches source coordinates, neutralize user controls and preserve raw text. Shared panels reserve cancel/choice footers and fit tiny terminals. Editor/status and help/search/export/pipe/conflict/Commands all use bounded dimensions; rendering never mutates viewport or draft.
+**DONE**, commit ffd2bb210d9d3bc412f56f17a18c59a0efdf936e. `layout.go`/`layout_test.go` provide one immutable grapheme/cell/source-row layout for wrapping, cursor placement, vertical movement and mouse hit testing. Tabs display at four-cell stops without changing bytes; combining/ZWJ clusters are never split; over-wide clusters have a one-cell display fallback. Render only viewport rows from the physical source layout, retain ANSI syntax styling when it matches source coordinates, neutralize user controls and preserve raw text. Shared panels reserve cancel/choice footers and fit tiny terminals. Editor/status and help/search/export/pipe/conflict/Commands all use bounded dimensions; rendering never mutates viewport or draft.
 
 PASS full suite (10.497s), race (13.422s), vet/build/diff/format, using prior CGO/sqlite_fts5 commands. T-25 covers every overlay at 120×40, 80×24, 50×12, 25×5 and 1×1/2×2. New tests cover wide-cell mouse positions, combining/ZWJ boundaries, preferred visual columns, exact source coverage/whitespace, safe control display and valid viewport restoration. `go test -tags sqlite_fts5 -run '^$' -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s .` PASSED (27,887 executions). Earlier tiny-menu footer, unset-size error visibility and invalid one-line viewport fixtures failed and were corrected: the old synthetic top=4 on a one-line note is now valid top=0, with a separate multi-line top=4 navigation regression preserving meaningful coverage. Textual snapshot: header/selected body/cancel footer on compact panels; 25×5 keeps Esc and conflict Copy/Reload labels visible. Main/schema unchanged; no production data. Manual Fedora/PTY integration is performed after QN-017. Next READY QN-017.
+
+
+## QN-017 — Overlay stack and explicit confirmations (2026-10-12)
+
+**DONE**, implementation commit QN017_SHA_PENDING. `overlays.go`/`overlays_test.go` provide nested modal frames preserving parent focus, prompt contents and viewport. Escape closes only the top overlay and invalidates obsolete reads. Mouse events cannot edit through modals. Confirmation dialogs default to Cancel, guard draft identity/version and support explicit keyboard choice; core cancel controls cannot be unbound. Existing R-twice conflict reload remains supported through the confirmation framework.
+
+Ghost conversion of a persisted note and the legacy empty-note purge require confirmation; cancel preserves the original. Ghost conversion explicitly describes removal of the original and does not promise secure erasure. Persisted-to-ghost completion obtains a new memory session identity. Shell output is reviewed before replacement, with one undo transaction; cancel/failure leaves buffer/history intact. The shell execution itself is still synchronous and remains QN-039's async/timeout/cancel scope.
+
+Export uses asynchronous path checking and atomic temporary-file writes. Existing paths require explicit overwrite approval; unconfirmed new writes use exclusive linking so a file created after checking cannot be silently overwritten. Failed writes leave existing data intact and open an error dialog; late completion cannot close another draft's prompt. This is the confirmation/export safety foundation, not completion of QN-041 backup/restore. Save/load/action failures are recoverable dialogs or persistent conflict states. Late startup settings apply without replacing a draft typed before startup completes. Configured keyboard hints remain accurate, and the legacy timer countdown remains pure. Future registry commands have explicit disabled reasons tied to their owning tasks rather than fake executors.
+
+PASS final full suite (10.793s), race (13.644s), vet/build/diff/format, Go 1.25.9/CGO/sqlite_fts5 using prior command paths. Added 13 overlay/confirmation/export/shell/failure/nested-scope tests, plus a future-action registry test. Across QN-013–017 there are 31 new regression tests and the Unicode source-row fuzz target. Test driver explicitly delivers typed command completions. Existing CAS, Unicode, identity, history, migration/backup and CLI tests continue to pass. Initial unused import after moving export I/O was corrected; no final failure.
+
+PASS `go test -tags sqlite_fts5 -count=20 -run 'TestQN011T17|TestQN012(T02|T24)|TestQN015T16|TestQN016T25|TestQN017(Nested|GhostConfirmation)' .` (10.024s). Earlier QN-016 bounded fuzz passed 27,887 executions. These are correctness checks; no release performance target is claimed.
+
+PASS final built-binary scripted PTY checks: independent SQLite writer lock with continued typing/resize, newest-edit persistence, external CAS conflict, compare/copy recovery, four terminal sizes and safe exit; nested search → help → Commands and layered Escape restoration; overwrite default Cancel and confirmed exact export; ghost default Cancel retaining the persisted original; Unicode/combining/CJK/emoji/tab text round trip. PASS isolated final CLI quiet creation/title/recent append, revision progression, injected write failure stderr/nonzero/zero stdout, unchanged DB on failure and integrity `ok`. Textual dialog snapshot: bounded title/body with visible Esc and default `> Cancel | Confirm`; selected Confirm changes only after Tab/arrow or the explicit reload shortcut.
+
+NOT RUN: human-operated Fedora/Zsh/Kitty/tmux/clipboard matrix, remote GitHub CI verification or release benchmarks. Scripted PTY is not manual Fedora evidence. Only synthetic temporary databases/files were used; schema remains user_version 2; no production backup/migration/retention policy change and no main changes.
+
+All five user-selected tasks QN-013–QN-017 are complete in separate implementation commits. QN-048 remains the specification's M1 math/code/snippet compatibility task outside that explicitly requested range; it is next READY. M2 durable TTL/pinning/ghost creation/Trash workflows and M3 fuzzy palette/search/sidebar remain assigned to their own tasks. Permanent-delete-from-Trash discoverability is still QN-032; the framework here confirms existing destructive paths without falsely marking that feature complete.

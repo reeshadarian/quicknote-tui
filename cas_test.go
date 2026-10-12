@@ -566,6 +566,10 @@ func TestQN011EmptyConflictCopyIsPersisted(t *testing.T) {
 	m, b, remote := conflictModel(t)
 	m.buffer = stringToBuffer("")
 	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.state == stateConfirm {
+		m = updateTest(t, m, keyMessage("tab"))
+		m = updateTest(t, m, keyMessage("enter"))
+	}
 	if m.state != stateConflict {
 		t.Fatal("stale empty delete should conflict")
 	}

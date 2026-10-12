@@ -50,3 +50,14 @@ func TestQN014HelpUsesRegistryBindings(t *testing.T) {
 		t.Fatal("registry keyboard routing failed")
 	}
 }
+func TestQN014FutureCommandsHaveExplicitDisabledReasons(t *testing.T) {
+	for _, id := range []string{"ghost.new", "ttl.set", "note.pin", "trash.deleteForever", "view.sidebar", "theme.pick", "view.motion", "notes.switcher"} {
+		a, ok := findAction(id)
+		if !ok {
+			t.Fatal("missing planned action", id)
+		}
+		if enabled, reason := a.Enabled(ActionContext{}); enabled || reason == "" {
+			t.Fatal("planned action falsely enabled", id)
+		}
+	}
+}

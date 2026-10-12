@@ -44,3 +44,19 @@ CGO_ENABLED=1 go test -tags sqlite_fts5 -count=20 \
 ```
 
 Model tests explicitly run commands and deliver typed completions, including deliberately out-of-order responses. Ordinary editing and resize must stay responsive during a pending SQLite save. Opening/canceling search preserves the draft without initiating a save; selecting a result saves or reports a recoverable conflict. Exit waits for all outstanding saves.
+
+
+QN-013–QN-017 integration checks (all require the same FTS5 tag):
+
+```zsh
+CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...
+CGO_ENABLED=1 go test -tags sqlite_fts5 -race -count=1 ./...
+CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-test .
+CGO_ENABLED=1 go test -tags sqlite_fts5 -count=20 \
+  -run 'TestQN011T17|TestQN012(T02|T24)|TestQN015T16|TestQN016T25|TestQN017(Nested|GhostConfirmation)' .
+CGO_ENABLED=1 go test -tags sqlite_fts5 -run '^$' \
+  -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s -parallel=2 .
+```
+
+Default Ctrl+K opens Commands; Alt+K deletes a line. Legacy Ctrl+K deletes a line and Alt+P opens Commands. See `docs/KEYBOARD.md` for custom bindings. Test nested search/help/Commands with layered Escape, 25×5 resizing, CJK/combining/ZWJ/tab placement, error dialogs and default-Cancel confirmations. Existing exports must remain untouched when overwrite is canceled; confirmed shell replacement must undo as one operation. Use only the isolated HOME above, and synthetic paths for any overwrite/ghost/purge checks.

@@ -46,8 +46,20 @@ func (k Keymap) Validate() error {
 		if !ok {
 			return fmt.Errorf("unknown action %q", id)
 		}
+		if strings.HasPrefix(id, "confirmation.") {
+			return fmt.Errorf("confirmation keys are fixed modal controls")
+		}
 		if id == "edit.codePair" || id == "edit.evaluate" {
 			return fmt.Errorf("literal formatting keys cannot be rebound")
+		}
+		if id == "search.cancel" || id == "help.close" || id == "conflict.edit" || id == "file.cancel" || id == "pipe.cancel" {
+			hasEsc := false
+			for _, key := range keys {
+				hasEsc = hasEsc || key == "esc"
+			}
+			if !hasEsc {
+				return fmt.Errorf("modal cancel action %s must retain Esc", id)
+			}
 		}
 		if len(keys) == 0 {
 			return fmt.Errorf("action %s requires a keyboard binding", id)
@@ -62,7 +74,7 @@ func (k Keymap) Validate() error {
 			}
 		}
 	}
-	for state := stateTyping; state <= stateCommands; state++ {
+	for state := stateTyping; state <= stateConfirm; state++ {
 		seen := map[string]string{}
 		for _, a := range actionRegistry() {
 			if !a.Available(ActionContext{State: state}) {
@@ -191,7 +203,7 @@ func (m model) commandActions() []Action {
 }
 func (m *model) openCommands() {
 	m.commandReturn = m.state
-	m.state = stateCommands
+	m.pushOverlay(stateCommands)
 	m.commandIndex = 0
 	m.openGeneration++
 	m.loadPending = false
@@ -219,4 +231,16 @@ func (m model) commandView() string {
 		lines = append(lines, line)
 	}
 	return m.panel(lines[0], strings.Join(lines[2:], "\n"), lines[1])
+}
+
+func (m model) shortcut(id string) string {
+	a, ok := findAction(id)
+	if !ok {
+		return ""
+	}
+	keys := m.keyboard().keys(a)
+	if len(keys) == 0 {
+		return ""
+	}
+	return strings.ToUpper(keys[0])
 }

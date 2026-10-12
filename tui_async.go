@@ -279,7 +279,7 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 	}
 	m.notes[m.index] = msg.Note
 	m.activateNote() // Pure installation; I/O has already completed.
-	m.state = stateTyping
+	m.clearOverlays(stateTyping)
 	if r.Trash {
 		m.state = stateTrash
 	}
@@ -411,8 +411,9 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 		m.openGeneration++
 		m.loadPending = false
 		m.stashNote()
-		m.prevState = m.state
-		m.state = stateSearch
+		previous := m.state
+		m.pushOverlay(stateSearch)
+		m.prevState = previous
 		m.searchInput.Focus()
 		m.searchInput.SetValue(m.searchQuery)
 		m.searchInput.CursorEnd()
@@ -431,7 +432,7 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 		m.openGeneration++
 		m.loadPending = false
 	case "ctrl+s":
-		m.state = statePromptFile
+		m.pushOverlay(statePromptFile)
 		m.fileInput.SetValue(extractTitle(bufferToString(m.buffer)) + ".md")
 		m.fileInput.CursorEnd()
 		m.fileInput.Focus()
@@ -441,12 +442,14 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 			return m.requestOpen(-1, false, nil, false)
 		}
 		if strings.TrimSpace(bufferToString(m.buffer)) == "" {
-			return m.mutate("purge")
+			m.confirm("purge", "Permanently delete empty note?", "This cannot be undone by Quicknote.", "")
+			return nil
 		}
 		return m.mutate("trash")
 	case "ctrl+g":
 		if !m.Note.IsGhost && m.activeID() > 0 {
-			return m.mutate("ghost")
+			m.confirm("ghost", "Delete original and continue as ghost?", "This removes the persisted original. Previous disk copies/backups may remain. Cancel keeps the original.", "")
+			return nil
 		}
 		m.Note.IsGhost = !m.Note.IsGhost
 		m.needsSave = true
@@ -467,8 +470,9 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 			return m.requestOpen(m.notes[target].ID, m.state == stateTrash, nil, false)
 		}
 	case "f1":
-		m.prevState = m.state
-		m.state = stateHelp
+		previous := m.state
+		m.pushOverlay(stateHelp)
+		m.prevState = previous
 		m.openGeneration++
 		m.loadPending = false
 		generation, store := m.openGeneration, m.store
@@ -498,6 +502,35 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.bindDraft()
 	m.clampDraftCursor()
+	if intent, ok := msg.(ActionMsg); ok && m.state == stateConfirm {
+		if a, found := findAction(intent.ID); found && a.Available(m.actionContext()) {
+			msg = a.Execute()
+		} else {
+			m.flashMsg = "Action unavailable"
+			return m, nil
+		}
+	}
+	if mouse, ok := msg.(tea.MouseMsg); ok && isOverlay(m.state) {
+		if m.state == stateHelp {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(mouse)
+			return m, cmd
+		}
+		return m, nil
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && m.state == stateConfirm {
+		before := m.buffer.Text()
+		cmd := m.confirmationKey(key.String())
+		if m.buffer.Text() != before {
+			m.versionSeq++
+			m.localVersion = m.versionSeq
+			cmd = tea.Batch(cmd, m.requestHighlight())
+		}
+		m.clampDraftCursor()
+		m.updateEditorScroll()
+		m.syncSummary()
+		return m, cmd
+	}
 	explicit := false
 	if intent, ok := msg.(ActionMsg); ok {
 		a, found := findAction(intent.ID)
@@ -542,7 +575,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && m.state == stateCommands {
 		switch key.String() {
 		case "esc", "ctrl+c":
-			m.state = m.commandReturn
+			m.popOverlay()
 		case "up":
 			m.commandIndex = max(0, m.commandIndex-1)
 		case "down":
@@ -557,7 +590,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.flashMsg = reason
 					return m, nil
 				}
-				m.state = m.commandReturn
+				m.popOverlay()
 				return m.Update(ActionMsg{a.ID})
 			}
 		}
@@ -596,6 +629,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case exportCheckResult:
+		cmd := m.receiveExportCheck(msg)
+		return m, cmd
+	case exportResult:
+		m.receiveExport(msg)
+		return m, nil
 	case keymapResult:
 		if msg.Generation == m.keyboardGeneration {
 			if msg.Err != nil {
@@ -637,18 +676,23 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case initDataMsg:
-		if m.openGeneration != 0 || m.localVersion != 0 || bufferToString(m.buffer) != "" {
+		if m.keyboardGeneration == 0 && msg.keyboard.Version != 0 {
+			m.keymap = msg.keyboard
+			if msg.keyboardNotice != "" {
+				m.flashMsg = msg.keyboardNotice
+			}
+		}
+		if msg.theme.BgDark != "" {
+			m.theme = msg.theme
+			m.highlightDirty = true
+		}
+		if m.openGeneration != 0 || m.localVersion != 0 || m.buffer.Text() != "" {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.flashMsg = "Load failed: " + msg.err.Error()
+			m.showError("Load failed", msg.err)
 			return m, nil
 		}
-		m.keymap = msg.keyboard
-		if msg.keyboardNotice != "" {
-			m.flashMsg = msg.keyboardNotice
-		}
-		m.theme = msg.theme
 		m.notes = msg.notes
 		m.allNotes = append([]Note(nil), msg.notes...)
 		m.index = 0
@@ -685,7 +729,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		// Copy recovery preserves the current cursor/history on the new identity.
 		m.saveErr = nil
 		m.needsSave = false
-		m.state = stateTyping
+		m.clearOverlays(stateTyping)
 		m.versionSeq++
 		m.localVersion = m.versionSeq
 		m.stashNote()
@@ -714,6 +758,14 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			m.Note.ID = 0
 			m.Note.Revision = 0
 			m.Note.IsGhost = true
+			m.sessionSeq++
+			m.Note.SessionID = m.sessionSeq
+			for i, n := range m.notes {
+				if n.ID == msg.NoteID {
+					m.notes[i] = cloneNote(m.Note)
+					m.index = i
+				}
+			}
 			m.needsSave = false
 			return m, nil
 		}
@@ -738,7 +790,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 	case tickMsg:
 		m.timerNow = time.Time(msg)
 		var save tea.Cmd
-		if m.state != stateConflict && m.state != stateTrash && m.state != stateSearch && m.saveErr == nil {
+		if m.state == stateTyping && m.saveErr == nil {
 			if m.activeID() >= 0 {
 				hash, duration := getKillTimerInfo(bufferToString(m.buffer))
 				if m.Note.KillHash != hash {
@@ -759,6 +811,10 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 	case tea.KeyMsg:
 		m.lastActivity = time.Now()
 		key := msg.String()
+		if key == "f1" && m.state != stateHelp && m.state != stateConflict {
+			cmd := m.runAction(msg)
+			return m, cmd
+		}
 		if m.state == stateConflict {
 			switch key {
 			case "c":
@@ -770,6 +826,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			case "r":
 				if !m.confirmReload {
 					m.confirmReload = true
+					m.confirm("reload", "Discard local draft?", "Reload the latest stored version. Local unsaved edits will be discarded.", "")
 					return m, nil
 				}
 				cmd := m.requestOpen(m.activeID(), false, nil, true)
@@ -789,7 +846,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			case "esc", "ctrl+c":
 				m.pendingAction = nil
 				m.pendingOpen = nil
-				m.state = m.prevState
+				m.popOverlay()
 				m.searchInput.Reset()
 				m.searchGeneration++
 				m.searchPending = false
@@ -836,7 +893,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			}
 		}
 		if m.state == stateHelp && (key == "esc" || key == "ctrl+c" || key == "enter" || key == "f1") {
-			m.state = m.prevState
+			m.popOverlay()
 			m.openGeneration++
 			return m, nil
 		}
