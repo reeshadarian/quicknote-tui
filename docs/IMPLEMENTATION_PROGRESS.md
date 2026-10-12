@@ -142,3 +142,19 @@ The maintainer ran `go test -count=1 -v ./...` and `go test -race -count=1 ./...
 Maintainer supplied Fedora terminal output after commit `7bccb94` showing **PASS** for `go test -count=1 -v ./...` (28 top-level tests, including QN-003/004/005/006/007/008/009/010) and **PASS** for `go test -race -count=1 ./...` (`ok quicknote 1.080s`). No test failures reported. `go vet` and `go build` were included in the previous requested command series but no separate explicit output was provided; treat those as not independently evidenced. Manual TUI scenarios and full end-to-end quiet-mode stdout checks remain pending.
 
 Next recommended task: QN-011 optimistic revision compare-and-swap, after ensuring the current implementation reads revisions from the store; preserve drafts on conflict. Keep all development changes on `dev/v2`.
+
+
+## Documentation consolidation and session handoff — 2026-10-11
+
+**GitHub is now the authoritative source for all Quicknote v2 generated Markdown artifacts:**
+
+- `docs/QUICKNOTE_V2_SPEC.md` — full v1.0.0 specification, uploaded from the original generated source (commit `bda14cfb`).
+- `AGENTS.md` — original coding-agent instructions, updated with the current task and documentation map (commits `80fe3db7`, `1a6a7a70`).
+- `docs/IMPLEMENTATION_PROGRESS_TEMPLATE.md` — archived **original 48-task planning ledger** (commit `931f1f80`), not to be substituted for this living ledger.
+- `docs/SESSION_HANDOFF.md` — complete repo-based next-session context and ready-to-paste QN-011 prompt (commit `c4f2a21d`).
+- `docs/LOCAL_TESTING.md` and `docs/QN-001-BASELINE.md` were already committed and remain available.
+- This `docs/IMPLEMENTATION_PROGRESS.md` retains all historical implementation/test records and is the only live task-status document.
+
+**Additional maintainer verification:** after reporting 25 of 29 manual checklist items completed, the maintainer subsequently confirmed pipeline capture persisted with an isolated Zsh test HOME and independently reran `TestQN010V1MigrationBackupAndIdempotency` (PASS). Permanent-delete-from-Trash UI remains unavailable; the remaining planned manual checks are not all confirmed. No new executable build was run for this documentation-only task.
+
+**Next recommended task:** QN-011, optimistic compare-and-swap revisions, after re-reading the specification and inspecting actual `dev/v2` HEAD. Preserve `main`.
