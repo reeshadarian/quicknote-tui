@@ -8,6 +8,8 @@ git switch dev/v2
 git pull --ff-only origin dev/v2
 go version
 go mod download
+export CGO_ENABLED=1
+export GOFLAGS='-tags=sqlite_fts5'
 go test -count=1 ./...
 go test -race -count=1 ./...
 go vet ./...
@@ -31,3 +33,5 @@ HOME="$tmp_home" /tmp/quicknote-v2-smoke
 Do not run a development binary against real notes until the migration tests pass. The migration should create a pre-v2 backup of an existing v1 database. The v2 schema adds revision, expires_at, and is_pinned. CAS revision enforcement and TTL scheduling are future tasks.
 
 Provide test command output and git commit SHA in your next implementation session.
+
+Quicknote uses SQLite FTS5. The `go-sqlite3` driver requires `sqlite_fts5` at build time; use the same tag for all tests and release builds. On Fedora, ensure `gcc` is installed. Avoid `-tags libsqlite3` unless intentionally using a verified system SQLite with FTS5.
