@@ -151,7 +151,16 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 	if d.Note.Revision <= msg.Note.Revision {
 		d.Note = cloneNote(msg.Note)
 	}
-	d.needsSave = d.localVersion != r.LocalVersion || d.buffer.Text() != r.Snapshot.Content
+	deletionGap := false
+	if known := m.latestLifecycleSnapshot(d.Note); known.Revision > d.Note.Revision && known.DeletedAt != "" {
+		d.Note.DeletedAt, d.Note.DeletedTime, d.Note.DeleteReason = known.DeletedAt, known.DeletedTime, known.DeleteReason
+		if combined, ok := withAdjacentDeletion(d.Note, known); ok {
+			d.Note = combined
+		} else {
+			deletionGap = true
+		}
+	}
+	d.needsSave = deletionGap || d.localVersion != r.LocalVersion || d.buffer.Text() != r.Snapshot.Content
 	d.saveErr = nil
 	if d.Note.DeletedAt != "" && d.needsSave {
 		d.saveErr = ErrTrashed
@@ -266,21 +275,17 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 		return nil
 	}
 	m.stashNote()
-	if d, ok := m.drafts[msg.Note.ID]; ok && d.Note.Revision > msg.Note.Revision {
-		if r.Reload {
-			return m.requestOpen(r.TargetID, r.Trash, r.Match, true)
-		}
-		msg.Note = cloneNote(d.Note)
+	// A newer summary proves this full read is stale, but does not supply the
+	// corresponding content. Refetch both content and revision in one snapshot.
+	known := m.latestLifecycleSnapshot(msg.Note)
+	if known.Revision > msg.Note.Revision {
+		return m.requestOpen(msg.Note.ID, known.DeletedAt != "", r.Match, r.Reload)
 	}
-	msg.Note = m.latestLifecycleSnapshot(msg.Note)
 	for i := range msg.Notes {
 		msg.Notes[i] = m.latestLifecycleSnapshot(msg.Notes[i])
 	}
 	if r.Reload {
 		delete(m.drafts, msg.Note.ID)
-	} else if d, ok := m.drafts[msg.Note.ID]; ok && msg.Note.DeletedAt != "" && d.Note.Revision <= msg.Note.Revision {
-		d.Note = mergeLifecycleMetadata(d.Note, msg.Note)
-		m.drafts[msg.Note.ID] = d
 	}
 	ephemeral := []Note{}
 	for _, n := range m.notes {
@@ -301,7 +306,14 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 	m.activateNote() // Pure installation; I/O has already completed.
 	m.clearOverlays(stateTyping)
 	var recovery tea.Cmd
-	if m.Note.DeletedAt != "" {
+	if m.needsSave && m.Note.Revision < msg.Note.Revision {
+		var err error = &ConflictError{ID: m.Note.ID, Expected: m.Note.Revision, Actual: msg.Note.Revision}
+		if msg.Note.DeletedAt != "" {
+			err = ErrTrashed
+		}
+		m.recordSaveError(err)
+		recovery = m.requestConflictRead()
+	} else if m.Note.DeletedAt != "" {
 		recovery = m.installLifecycleDraft(m.activeKey(), m.EditorDraft)
 	} else if r.Trash && m.Note.ID < 0 {
 		m.state = stateTrash

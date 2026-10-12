@@ -43,6 +43,7 @@ type model struct {
 	lastMaintenance       time.Time
 	lifecycleRequests     map[int]lifecycleRequest
 	lifecycleQueued       map[int]lifecycleIntent
+	lifecycleChanges      map[NoteID]LifecycleChange
 	overlays              []OverlayFrame
 	confirmation          Confirmation
 	exportGeneration      uint64

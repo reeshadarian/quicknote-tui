@@ -160,7 +160,8 @@ func TestQN012LoadCannotRegressAcknowledgedSessionRevision(t *testing.T) {
 	// Fetch A before its worker commits, but deliver this load afterward.
 	oldLoad := m.requestOpen(first.ID, false, nil, false)()
 	m, _ = rawUpdate(m, save())
-	m, _ = rawUpdate(m, oldLoad)
+	// A newer retained revision now triggers a fresh, complete snapshot read.
+	m = updateTest(t, m, oldLoad)
 	if bufferToString(m.buffer) != text || m.notes[m.index].Revision != first.Revision+1 || m.needsSave {
 		t.Fatal("old read regressed acknowledged save")
 	}

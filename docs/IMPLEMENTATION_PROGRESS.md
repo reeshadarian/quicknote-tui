@@ -414,3 +414,26 @@ Publication: direct HTTPS push failed because askpass credentials were unavailab
 **PASSED:** focused committed regressions (0.021s); original spec-review overlay reproductions (0.016s) and code-review overlay reproductions (0.011s); full `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` (11.758s); full race (18.736s); vet; build using previously documented `-buildvcs=false`; bounded directive fuzz (24,216 executions, 1.826s); final built-binary `python3 /tmp/qn028-cli-check.py`; gofmt/diff checks. Twenty lifecycle/CAS repetitions passed (22.882s) using the same exact command recorded above. Only synthetic fixtures used. Schema remains 3; no store/migration/retention policy change in this correction.
 
 Independent re-review and coordinator integration remain pending. Human/PTY/CI/performance limits remain as documented above. Next dependent task remains QN-029 only after QN-028 integration acceptance.
+
+### QN-028 correction round 2 — keep content and CAS revision paired
+
+**REVIEW**, follow-up on `4f327207dbaa4dbc985b506e4eb35e00349c72c7` in the same isolated QN-028 branch. Spec re-review found that round 1's metadata merge could attach a newer list/search revision to older full content, allowing a later save to bypass CAS. New committed regressions reproduced this for both list/search summaries and for an expiry revision gap hiding another writer's content (targeted red, 0.016s).
+
+`receiveLoad` now refetches a complete snapshot whenever a known newer revision supersedes its full read. It never borrows a summary revision as a content base. The refetch retains source/version/generation cancellation checks and uses the known active/Trash scope. Dirty retained drafts keep their original revision/text/history and enter recovery when a fresh snapshot reveals a conflict. The existing QN-012 delayed-read test now drives the additional refetch command, retaining all identity/text/revision/clean assertions.
+
+Maintenance observations have a separate ID/revision record so syncing an older draft into list summaries cannot erase a later deletion. An expiry advances a retained content base only when its revision is exactly the next revision, proving no intervening content write. Successful delayed save/lifecycle acknowledgments can likewise combine with an immediately following deletion; larger revision gaps retain the old base and recovery. The old generic metadata-to-content revision merge was removed.
+
+Changed files: `tui.go`, `tui_async.go`, `tui_lifecycle.go`, `tui_async_test.go`, `tui_lifecycle_test.go`, ledger/handoff. Five new test functions cover real delayed load/save responses, fresh search/list revisions, dirty drafts, unseen-content sweep gaps, refetch typing/overlay cancellation and late save across a separate content update. No parser/store/schema changes in this correction.
+
+**PASSED after final Go edits:**
+
+- `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 -run TestQN028Review .` — 0.037s.
+- `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 -run 'TestQN028|TestQN012' .` — 5.220s (before final two added test cases; those are included in the final full/race/repetition gates).
+- Original spec overlay: `CGO_ENABLED=1 go test -tags sqlite_fts5 -overlay=/tmp/qn028-spec-review/overlay.json -count=1 -run '^TestReviewQN028' .` — 0.018s, including the new overwrite reproduction.
+- Earlier code-review reproductions with only the harness changed to drive the returned refetch command: `CGO_ENABLED=1 go test -tags sqlite_fts5 -overlay=/tmp/qn028-round2-code-review-overlay.json -count=1 -run '^TestReviewQN028' .` — 0.013s; assertions unchanged.
+- Full `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` — 11.804s.
+- Full `CGO_ENABLED=1 go test -tags sqlite_fts5 -race -count=1 ./...` — 18.629s.
+- `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=20 -run 'TestQN028|TestQN011T17' .` — 22.960s.
+- `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`; `CGO_ENABLED=1 go build -buildvcs=false -tags sqlite_fts5 -o /tmp/quicknote-m2-qn028-bin .`; final built-binary `python3 /tmp/qn028-cli-check.py`; gofmt/diff checks.
+
+Initial intermediate tests exposed loss of observed deletion when an older active draft resynced summaries, plus the existing test's unconsumed refetch command; both corrected before the final gates. Parser fuzz was not repeated because the parser is unchanged from round 1's verified 24,216 executions. Schema remains 3; synthetic data only; no integration/push/main changes. Independent re-review remains required before DONE. Prior PTY/human/CI/build-stamping caveats remain recorded; coordinator owns final integration evidence and QN-029 readiness.

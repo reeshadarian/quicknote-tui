@@ -303,3 +303,187 @@ func TestQN028ReviewLateLifecycleAfterSweep(t *testing.T) {
 		t.Fatal("old lifecycle ack replaced sweep", m.Note, m.state, e)
 	}
 }
+
+// Exercise real store reads and writes, retaining the delayed worker response.
+// A summary may reveal a newer revision but cannot supply its full content base.
+func TestQN028ReviewSummaryRevisionOwnsContent(t *testing.T) {
+	for _, source := range []string{"search", "list"} {
+		t.Run(source, func(t *testing.T) {
+			m, s, b := lifecycleModel(t)
+			a, e := s.Save(Note{Content: "ordinary active A"})
+			if e != nil {
+				t.Fatal(e)
+			}
+			m.notes = []Note{a, b}
+			m.index = 0
+			m.activateNote()
+			m.pushOverlay(stateSearch)
+			m.prevState = stateTyping
+			m.searchGeneration = 1
+			m.searchInput.SetValue("latest")
+			oldLoad := m.requestOpen(b.ID, false, nil, false)().(loadResult)
+			if oldLoad.Err != nil {
+				t.Fatal(oldLoad.Err)
+			}
+			b.Content = "#kill 2 hours\nlatest remote content"
+			remote, e := s.Save(b)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if source == "search" {
+				results, e := s.SearchChecked("latest", false)
+				if e != nil {
+					t.Fatal(e)
+				}
+				m = updateTest(t, m, searchResult{searchRequest{1, "latest", false}, results, nil})
+			} else {
+				summaries, e := s.ListChecked(false)
+				if e != nil {
+					t.Fatal(e)
+				}
+				m.allNotes = summaries
+			}
+			m = updateTest(t, m, oldLoad)
+			if m.activeID() == b.ID && m.Note.Revision == remote.Revision && m.buffer.Text() != remote.Content {
+				t.Fatal("summary revision attached to stale content", m.Note, m.buffer.Text())
+			}
+			m.buffer = stringToBuffer(m.buffer.Text() + " local edit")
+			m.localVersion++
+			m.needsSave = true
+			m = drainTestCmd(t, m, m.requestSave())
+			stored, e := s.GetNote(b.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if stored.Content != remote.Content && stored.Content != remote.Content+" local edit" {
+				t.Fatal("overwrote remote content", stored.Content)
+			}
+			if m.saveErr == nil && m.activeID() == b.ID && m.buffer.Text() != remote.Content+" local edit" {
+				t.Fatal("stale text accepted without conflict")
+			}
+		})
+	}
+}
+
+func TestQN028ReviewDirtyLoadKeepsOriginalBase(t *testing.T) {
+	m, s, b := lifecycleModel(t)
+	m.buffer = stringToBuffer("local unsaved B")
+	m.needsSave = true
+	m.localVersion++
+	m.undoStack = []textState{{content: b.Content}}
+	m.stashNote()
+	a, e := s.Save(Note{Content: "active A"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.notes = []Note{a, b}
+	m.index = 0
+	m.activateNote()
+	oldLoad := m.requestOpen(b.ID, false, nil, false)().(loadResult)
+	b.Content = "new remote B"
+	remote, e := s.Save(b)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.searchResults = []Note{{ID: b.ID, Revision: remote.Revision, Preview: "new remote B"}}
+	m = updateTest(t, m, oldLoad)
+	if m.buffer.Text() != "local unsaved B" || m.Note.Revision != b.Revision || !m.needsSave || len(m.undoStack) != 1 {
+		t.Fatal("dirty base changed", m.Note, m.buffer.Text())
+	}
+	m = drainTestCmd(t, m, m.requestSave())
+	stored, e := s.GetNote(b.ID)
+	if e != nil || stored.Content != remote.Content || !errors.Is(m.saveErr, ErrConflict) {
+		t.Fatal("dirty draft overwrote remote", stored, e, m.saveErr)
+	}
+}
+
+func TestQN028ReviewSweepRevisionGapKeepsBase(t *testing.T) {
+	m, s, n := lifecycleModel(t)
+	n.Content += " committed remotely"
+	remote, e := s.Save(n)
+	if e != nil {
+		t.Fatal(e)
+	}
+	swept, e := s.Maintain(lifecycleNow().Add(time.Minute), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.maintenanceGeneration = 1
+	m = updateTest(t, m, maintenanceResult{1, swept, nil})
+	if m.Note.Revision > n.Revision && m.buffer.Text() != remote.Content {
+		t.Fatal("sweep promoted old text across unseen content", m.Note, m.buffer.Text())
+	}
+}
+
+func TestQN028ReviewRefetchPreservesSourceAndCancellation(t *testing.T) {
+	for _, cancel := range []string{"typing", "overlay"} {
+		t.Run(cancel, func(t *testing.T) {
+			m, s, b := lifecycleModel(t)
+			a, e := s.Save(Note{Content: "source A"})
+			if e != nil {
+				t.Fatal(e)
+			}
+			m.notes = []Note{a, b}
+			m.index = 0
+			m.activateNote()
+			old := m.requestOpen(b.ID, false, nil, false)().(loadResult)
+			b.Content = "new remote B"
+			remote, e := s.Save(b)
+			if e != nil {
+				t.Fatal(e)
+			}
+			m.searchResults = []Note{{ID: b.ID, Revision: remote.Revision}}
+			if cancel == "overlay" {
+				m.pushOverlay(stateHelp)
+			}
+			refetch := m.receiveLoad(old)
+			if refetch == nil || m.activeID() != a.ID || m.buffer.Text() != a.Content {
+				t.Fatal("stale load changed source before refetch")
+			}
+			if cancel == "overlay" {
+				if m.state != stateHelp {
+					t.Fatal("refetch closed overlay")
+				}
+				m.popOverlay()
+			} else {
+				m = typeTest(m, " newest")
+			}
+			before := m.buffer.Text()
+			m = updateTest(t, m, refetch())
+			if m.activeID() != a.ID || m.buffer.Text() != before {
+				t.Fatal("refetch ignored cancellation/source version")
+			}
+		})
+	}
+}
+
+func TestQN028ReviewLateSaveAcrossUnseenContent(t *testing.T) {
+	m, s, n := lifecycleModel(t)
+	m.buffer = stringToBuffer(n.Content + " own saved text")
+	m.localVersion++
+	m.needsSave = true
+	saved := m.requestSave()().(saveResult)
+	if saved.Err != nil {
+		t.Fatal(saved.Err)
+	}
+	remote := saved.Note
+	remote.Content = n.Content + " new remote text"
+	remote, e := s.Save(remote)
+	if e != nil {
+		t.Fatal(e)
+	}
+	sweep, e := s.Maintain(lifecycleNow().Add(time.Minute), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.maintenanceGeneration = 1
+	m = updateTest(t, m, maintenanceResult{1, sweep, nil})
+	m = updateTest(t, m, saved)
+	if m.Note.Revision != saved.Note.Revision || !m.needsSave || !errors.Is(m.saveErr, ErrTrashed) || m.conflictRemote.Content != remote.Content {
+		t.Fatal("unseen content gap adopted", m.Note, m.saveErr, m.conflictRemote)
+	}
+	stored, e := s.GetNote(n.ID)
+	if e != nil || stored.Content != remote.Content {
+		t.Fatal("remote data changed", stored, e)
+	}
+}

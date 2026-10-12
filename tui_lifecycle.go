@@ -95,8 +95,18 @@ func (m *model) reconcileMaintenance(result MaintenanceResult) tea.Cmd {
 	var recovery tea.Cmd
 	m.stashNote()
 	for _, c := range result.Expired {
+		if m.lifecycleChanges == nil {
+			m.lifecycleChanges = map[NoteID]LifecycleChange{}
+		}
+		if old, ok := m.lifecycleChanges[c.ID]; !ok || old.Revision < c.Revision {
+			m.lifecycleChanges[c.ID] = c
+		}
 		if d, ok := m.drafts[c.ID]; ok && d.Note.Revision < c.Revision {
-			d.Note.Revision = c.Revision
+			// Only an adjacent revision proves this deletion was the sole change.
+			// A gap may hide another writer's content; keep its original CAS base.
+			if c.Revision == d.Note.Revision+1 {
+				d.Note.Revision = c.Revision
+			}
 			d.Note.DeletedAt = FormatLifecycleTime(c.DeletedAt)
 			d.Note.DeletedTime = c.DeletedAt
 			d.Note.DeleteReason = c.Reason
@@ -249,7 +259,16 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	// A successful write is acknowledged by removing its request, but a later
 	// observed revision owns the lifecycle state (including an external restore).
 	if known := m.latestLifecycleSnapshot(msg.Note); known.Revision > msg.Note.Revision {
-		return m.finishExit()
+		// The held acknowledgment can establish the content base immediately before
+		// a later deletion; larger gaps still require a fresh full read.
+		if d.Note.Revision >= known.Revision {
+			return m.finishExit()
+		}
+		combined, ok := withAdjacentDeletion(msg.Note, known)
+		if !ok {
+			return m.finishExit()
+		}
+		msg.Note = combined
 	}
 	// Metadata acknowledgments never replace the draft's buffer or history.
 	d.Note = cloneNote(msg.Note)
@@ -289,6 +308,9 @@ func (m model) latestLifecycleSnapshot(n Note) Note {
 			latest = candidate
 		}
 	}
+	if change, ok := m.lifecycleChanges[n.ID]; ok {
+		consider(Note{ID: change.ID, Revision: change.Revision, DeletedAt: FormatLifecycleTime(change.DeletedAt), DeletedTime: change.DeletedAt, DeleteReason: change.Reason})
+	}
 	consider(m.Note)
 	if d, ok := m.drafts[n.ID]; ok {
 		consider(d.Note)
@@ -298,13 +320,16 @@ func (m model) latestLifecycleSnapshot(n Note) Note {
 			consider(candidate)
 		}
 	}
-	return mergeLifecycleMetadata(n, latest)
+	return cloneNote(latest)
 }
-func mergeLifecycleMetadata(n, latest Note) Note {
-	n.Revision = latest.Revision
-	n.ExpiresAt, n.IsPinned = latest.ExpiresAt, latest.IsPinned
-	n.ExpirationSource, n.ExpirationNeedsReview = latest.ExpirationSource, latest.ExpirationNeedsReview
-	n.KillHash, n.KillStart = latest.KillHash, latest.KillStart
-	n.DeletedAt, n.DeletedTime, n.DeleteReason = latest.DeletedAt, latest.DeletedTime, latest.DeleteReason
-	return n
+
+// Store deletion mutations do not change content. Only an immediately following
+// deletion can therefore advance this full snapshot's base without a new read.
+func withAdjacentDeletion(base, known Note) (Note, bool) {
+	if known.Revision != base.Revision+1 || known.DeletedAt == "" || (known.DeleteReason != DeleteExpired && known.DeleteReason != DeleteManual) {
+		return base, false
+	}
+	base.Revision = known.Revision
+	base.DeletedAt, base.DeletedTime, base.DeleteReason = known.DeletedAt, known.DeletedTime, known.DeleteReason
+	return base, true
 }
