@@ -1,9 +1,9 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: 801f50262696b9be9e68b2a991b3b96000981b69
+Latest implementation SHA: a9d4c0c79f3674c1abac5dc6a0386501c75c579b
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-048 DONE; next READY QN-028
+Current task: QN-028 DONE; next READY QN-029 (approved M2 execution)
 Updated: 2026-10-12 UTC
 
 ## Completed repository changes
@@ -437,3 +437,12 @@ Changed files: `tui.go`, `tui_async.go`, `tui_lifecycle.go`, `tui_async_test.go`
 - `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`; `CGO_ENABLED=1 go build -buildvcs=false -tags sqlite_fts5 -o /tmp/quicknote-m2-qn028-bin .`; final built-binary `python3 /tmp/qn028-cli-check.py`; gofmt/diff checks.
 
 Initial intermediate tests exposed loss of observed deletion when an older active draft resynced summaries, plus the existing test's unconsumed refetch command; both corrected before the final gates. Parser fuzz was not repeated because the parser is unchanged from round 1's verified 24,216 executions. Schema remains 3; synthetic data only; no integration/push/main changes. Independent re-review remains required before DONE. Prior PTY/human/CI/build-stamping caveats remain recorded; coordinator owns final integration evidence and QN-029 readiness.
+
+
+### QN-028 integration acceptance
+
+DONE on dev/v2: implementation `7c6d6c31093f3477e97a86b04a0e95ef627fca36`, review fixes `4f327207dbaa4dbc985b506e4eb35e00349c72c7` and `a9d4c0c79f3674c1abac5dc6a0386501c75c579b`. Both independent spec and code reviewers approved after two correction rounds. Latest fix prevents stale content adopting newer summary revisions; superseded loads refetch a full snapshot, dirty drafts retain their original CAS base, and maintenance acknowledgments cannot advance across unseen content revisions. Original overwrite reproduction passed in independent review (0.010s).
+
+Final implementer gates after the correction: full11.804s, race18.629s, vet, build(-buildvcs=false in isolated worktree), twenty lifecycle/CAS repetitions22.960s, synthetic CLI, diff/gofmt passed; exact commands are recorded above/in correction report. Coordinator ran `CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .` from the primary checkout: PASSED, resolving the isolated VCS-stamping limit. Independently prepared test harness at earlier fix4f32720 passed CLI8/8 and PTY foundation10/15; five scenarios explicitly await029–032UI, not full M2 acceptance. Periodic inactive expiry after editor readiness, locked-save typing/resize and externally-expired draft copy recovery passed. Reviewed scripts remain in a separate integration branch pending final UI alignment.
+
+Only synthetic DB/backup/restore fixtures were used. No production notes/backups or main changes; DB version3. Human Fedora/Kitty/tmux/clipboard, remote CI and performance checks remain NOT RUN. Next READY QN-029; continue all approved M2 tasks without stopping between them.
