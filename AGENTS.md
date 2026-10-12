@@ -4,6 +4,10 @@ This repository is a Go + Bubble Tea + Lip Gloss + SQLite terminal scratchpad. Q
 
 1. `docs/QUICKNOTE_V2_SPEC.md` — **full, self-contained engineering specification** (scope, acceptance tests, dependencies, architectural decisions).
 2. `docs/IMPLEMENTATION_PROGRESS.md` — **living execution state** (task statuses, commits, tests, blockers, handoffs).
+3. `docs/SESSION_HANDOFF.md` — **self-contained continuation instructions** and current next task.
+4. `docs/LOCAL_TESTING.md` — Fedora/Zsh setup, SQLite FTS5 build flags, safe test commands.
+
+The original initial ledger is archived at `docs/IMPLEMENTATION_PROGRESS_TEMPLATE.md`. Never replace the living ledger with that template.
 
 Read both in full before editing. Inspect `git status`, `git log -5 --oneline`, and the current code; do not assume the documented October 2026 baseline is unchanged. Do not claim a test passed unless you ran it. Do not claim data was migrated or a backup created unless verified.
 
@@ -20,6 +24,6 @@ Read both in full before editing. Inspect `git status`, `git log -5 --oneline`, 
 
 ## Entry prompt for a resumed coding session
 
-> Read `AGENTS.md`, `docs/QUICKNOTE_V2_SPEC.md`, and `docs/IMPLEMENTATION_PROGRESS.md`; inspect current git state, choose the next READY P0/P1 task, implement its acceptance criteria with tests, and update the progress file. Report exact commits, tests, and blockers. Do not implement unrelated features.
+> Read `AGENTS.md`, `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`; inspect current git state, choose the next READY P0/P1 task (currently QN-011 unless the branch has advanced), implement its acceptance criteria with tests, and update the progress file. Report exact commits, tests, and blockers. Do not implement unrelated features.
 
-The original spec was produced by public static inspection, not by running tests or changing repository code. The first task is `QN-001` unless current progress records otherwise.
+The original specification was produced from public static inspection; implementation and verified regression tests followed on `dev/v2`. QN-001–QN-010 have been committed and the maintainer reported passing Go/race tests on 2026-10-11. The next intended task is QN-011, subject to current branch and ledger inspection.
