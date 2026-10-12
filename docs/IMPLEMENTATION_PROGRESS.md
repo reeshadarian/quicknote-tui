@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-012 — implemented and acceptance verified; next QN-013
+Current task: QN-013 — DONE; next QN-014 (user requested QN-013–017)
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
@@ -274,3 +274,16 @@ No QN-012 blocker remains. **QN-013 is next READY**: explicit EditorDraft/author
 
 
 **QN-012 publication:** the connected GitHub API published implementation commit `15dfba9cc8145eee51782d5f3c1b7463f81ec74b` directly to `dev/v2`, with expected head `3d7c8659d92cea926840af77578dca4d85b771d3`. Its tree `bc0b036a05d42c0d8cbf6a178a1f7d256e37c036` exactly matches the locally staged/tested implementation tree. This documentation-only follow-up records the exact published SHA; it makes no further Go changes. `main` remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.
+
+
+## QN-013 — Explicit EditorDraft and authoritative identity (2026-10-12)
+
+**DONE**, implementation commit: QN013_SHA_PENDING. Starting HEAD `211ec0b8a1fca0e44873ba287b06b167c8985168`. The user authorized QN-013 through QN-017; this is the first independently testable step.
+
+`draft.go`/`draft_test.go` introduce EditorDraft ownership of Note/base revision, EditorBuffer, history, dirty/error/version, cursor/viewport, and copy-recovery state. Stable in-memory session keys separate ID-zero/ghost drafts; async save/load/highlight requests identify the draft as well as persisted ID. List indices only navigate summaries and cannot redirect writes after reorder. Deep draft snapshots isolate buffers/history/viewport. Source maps expose byte/rune/grapheme/cell positions; buffer insert/delete/split/join/replace preserve graphemes. Typing history groups bursts, clears redo on new edits and has configurable transaction/byte bounds.
+
+`tui.go`/`tui_async.go` now use the embedded draft's authoritative Note, with pure identity installation. `db.go` adds in-memory-only SessionID (no schema change); `engine.go` stops expanding tabs on load. Removed the unconditional final empty-line append: navigation and ordinary edits now preserve intentional newline/tab/whitespace bytes. Existing async fixture tests were adapted to explicit metadata ownership without weakening CAS/identity assertions.
+
+PASS baseline/full suite, full race, vet, build and diff/format checks with Go 1.25.9, CGO and sqlite_fts5. Commands: `go test -tags sqlite_fts5 -count=1 ./...`, `go test -tags sqlite_fts5 -race -count=1 ./...`, `go vet -tags sqlite_fts5 ./...`, `go build -tags sqlite_fts5 -o /workspace/scratch/bf7235c166cf/quicknote-m1 .` using `/workspace/scratch/bf7235c166cf/go/bin/go`. T-01–04/T-17 and QN-012 tests run in those suites; added reorder/ghost identity, exact text, grouped/bounded undo and source-map/buffer operation tests. Initial compilation failures from old private session field names and metadata fixtures were corrected. No final failure. Human Fedora interaction NOT RUN at this step; Unicode cell layout is integrated further in QN-016.
+
+Schema user_version remains 2; only temporary synthetic DBs were used; main unchanged. Next READY: QN-014. QN-048 remains outside the user-selected QN-013–017 scope.

@@ -36,15 +36,13 @@ type textState struct {
 }
 
 type model struct {
-	store    NoteStore
-	notes    []Note
-	allNotes []Note
-	index    int
-
-	buffer         [][]rune
-	cursorRow      int
-	cursorCol      int
-	virtualPhysCol int
+	EditorDraft
+	draftReady bool
+	sessionSeq uint64
+	store      NoteStore
+	notes      []Note
+	allNotes   []Note
+	index      int
 
 	viewport    viewport.Model
 	fileInput   textinput.Model
@@ -57,12 +55,7 @@ type model struct {
 	flashMsg     string
 	showLineNums bool
 
-	undoStack []textState
-	redoStack []textState
-
-	viewportTop  *int
 	lastActivity time.Time
-	freeScroll   bool
 
 	theme Theme
 
@@ -72,13 +65,11 @@ type model struct {
 	cachedHighlight string
 	highlightDirty  bool
 
-	needsSave bool
-	timerNow  time.Time
+	timerNow time.Time
 
 	searchResults       []Note
 	searchIndex         int
-	drafts              map[int]noteSession
-	saveErr             error
+	drafts              map[int]EditorDraft
 	conflictRemote      Note
 	conflictReadErr     error
 	confirmReload       bool
@@ -89,7 +80,6 @@ type model struct {
 	pendingOpen         *Note
 	pendingActionID     int
 	requestSeq          uint64
-	localVersion        uint64
 	versionSeq          uint64
 	openGeneration      uint64
 	searchGeneration    uint64
@@ -101,85 +91,6 @@ type model struct {
 	pendingAction       *tea.KeyMsg
 	actionPending       bool
 	recoveryGeneration  uint64
-}
-
-type noteSession struct {
-	content                   string
-	row, col, virtualCol, top int
-	undo, redo                []textState
-	dirty                     bool
-	base                      Note
-	saveErr                   error
-	version                   uint64
-	recovered                 bool
-}
-
-func (m *model) stashNote() {
-	if len(m.notes) == 0 || m.index < 0 || m.index >= len(m.notes) {
-		return
-	}
-	id := m.notes[m.index].ID
-	if id < 0 {
-		return
-	}
-	if m.drafts == nil {
-		m.drafts = make(map[int]noteSession)
-	}
-	top := 0
-	if m.viewportTop != nil {
-		top = *m.viewportTop
-	}
-	previous := m.drafts[id]
-	content := bufferToString(m.buffer)
-	recovered := previous.recovered && previous.content == content && previous.version == m.localVersion
-	m.drafts[id] = noteSession{recovered: recovered, content: content,
-		row: m.cursorRow, col: m.cursorCol, virtualCol: m.virtualPhysCol, top: top,
-		undo: append([]textState(nil), m.undoStack...),
-		redo: append([]textState(nil), m.redoStack...), dirty: m.needsSave, base: m.notes[m.index], saveErr: m.saveErr, version: m.localVersion}
-}
-func (m *model) activateNote() bool {
-	if len(m.notes) == 0 || m.index < 0 || m.index >= len(m.notes) {
-		return false
-	}
-	n := &m.notes[m.index]
-	m.buffer = stringToBuffer(n.Content)
-	m.cursorRow, m.cursorCol, m.virtualPhysCol = 0, 0, 0
-	m.undoStack, m.redoStack = nil, nil
-	m.needsSave = false
-	m.saveErr = nil
-	m.versionSeq++
-	m.localVersion = m.versionSeq
-	if m.viewportTop == nil {
-		m.viewportTop = new(int)
-	}
-	*m.viewportTop = 0
-	if d, ok := m.drafts[n.ID]; ok && (d.dirty || d.base.Revision == n.Revision) {
-		if d.dirty {
-			*n = d.base
-		}
-		m.saveErr = d.saveErr
-		m.localVersion = d.version
-		m.buffer = stringToBuffer(d.content)
-		m.cursorRow, m.cursorCol, m.virtualPhysCol = d.row, d.col, d.virtualCol
-		m.undoStack = append([]textState(nil), d.undo...)
-		m.redoStack = append([]textState(nil), d.redo...)
-		m.needsSave = d.dirty
-		*m.viewportTop = d.top
-	}
-	if len(m.buffer) == 0 {
-		m.buffer = stringToBuffer("")
-	}
-	if m.cursorRow < 0 || m.cursorRow >= len(m.buffer) {
-		m.cursorRow = 0
-	}
-	if m.cursorCol < 0 {
-		m.cursorCol = 0
-	}
-	if m.cursorCol > len(m.buffer[m.cursorRow]) {
-		m.cursorCol = len(m.buffer[m.cursorRow])
-	}
-	m.highlightDirty = true
-	return true
 }
 
 type tickMsg time.Time
@@ -200,9 +111,6 @@ func cursorBlinkCmd() tea.Cmd {
 
 func pushStack(stack []textState, val string, row, col int) []textState {
 	stack = append(stack, textState{content: val, row: row, col: col})
-	if len(stack) > 50 {
-		stack = stack[1:] // Limit history to 50 states
-	}
 	return stack
 }
 
@@ -225,22 +133,22 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 
 	// Instantly return the model without touching the disk or database
 	m := model{
-		store:          NewSQLiteStore(db),
-		notes:          []Note{{ID: 0, Content: "", Preview: ""}},
-		allNotes:       []Note{},
-		index:          0,
-		buffer:         stringToBuffer(""),
-		cursorRow:      0,
-		cursorCol:      0,
-		virtualPhysCol: 0,
-		fileInput:      fi,
-		searchInput:    si,
-		pipeInput:      pi,
-		viewport:       vp,
-		state:          stateTyping,
-		showLineNums:   true,
-		viewportTop:    new(int),
-		timerNow:       startTime,
+		EditorDraft: EditorDraft{buffer: stringToBuffer(""),
+			cursorRow:      0,
+			cursorCol:      0,
+			virtualPhysCol: 0,
+			viewportTop:    new(int)},
+		store:        NewSQLiteStore(db),
+		notes:        []Note{{ID: 0, Content: "", Preview: ""}},
+		allNotes:     []Note{},
+		index:        0,
+		fileInput:    fi,
+		searchInput:  si,
+		pipeInput:    pi,
+		viewport:     vp,
+		state:        stateTyping,
+		showLineNums: true,
+		timerNow:     startTime,
 		// Provide a fallback theme while loading
 		theme:    Theme{BgDark: "#1E1E2E", TextLight: "#CDD6F4", AccentNormal: "#89B4FA"},
 		flashMsg: fmt.Sprintf("Started in %.2fms", float64(time.Since(startTime).Nanoseconds())/1e6),
@@ -293,7 +201,7 @@ func (m *model) generateHelpText() string {
 
 	var docProps string
 	if len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
-		currentNote := m.notes[m.index]
+		currentNote := m.Note
 		content := bufferToString(m.buffer)
 		lines := len(m.buffer)
 		words := len(strings.Fields(content))
@@ -1222,10 +1130,6 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if len(m.buffer) > 0 && len(m.buffer[len(m.buffer)-1]) > 0 {
-			m.buffer = append(m.buffer, []rune{})
-		}
-
 		clampCursor()
 
 		kStr := msg.String()
@@ -1260,6 +1164,9 @@ Finalize:
 }
 
 func (m model) View() string {
+	if !m.draftReady && m.index >= 0 && m.index < len(m.notes) {
+		m.Note = cloneNote(m.notes[m.index])
+	}
 	if m.state == stateConflict {
 		return m.conflictView()
 	}
@@ -1314,7 +1221,7 @@ func (m model) View() string {
 		noteInfoStr = fmt.Sprintf(" Note %d/%d%s ", m.index+1, len(m.notes), searchTag)
 	}
 
-	if m.notes[m.index].IsGhost {
+	if m.Note.IsGhost {
 		noteInfoStr = lipgloss.NewStyle().Background(lipgloss.Color(bgMed)).Foreground(textLight).Bold(true).Padding(0, 1).Render("󰊠")
 	}
 	if m.saveErr != nil {
@@ -1338,8 +1245,8 @@ func (m model) View() string {
 	killBlock := ""
 	if m.state != stateTrash && len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
 		_, duration := getKillTimerInfo(currentText)
-		if duration != nil && !m.notes[m.index].KillStart.IsZero() {
-			remaining := m.notes[m.index].KillStart.Add(*duration).Sub(m.timerNow)
+		if duration != nil && !m.Note.KillStart.IsZero() {
+			remaining := m.Note.KillStart.Add(*duration).Sub(m.timerNow)
 			if remaining > 0 {
 				killBlock = lipgloss.NewStyle().
 					Background(bgDark).
@@ -1364,15 +1271,15 @@ func (m model) View() string {
 
 	leftBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBarBlocks...)
 
-	timeStr := " " + formatRelativeTime(m.notes[m.index].UpdatedTime) + " "
+	timeStr := " " + formatRelativeTime(m.Note.UpdatedTime) + " "
 	if m.state != stateTrash {
 		timeStr = " " + m.saveStatus() + " "
 	}
 	if m.state == stateTrash {
-		if m.notes[m.index].DeletedTime.IsZero() {
+		if m.Note.DeletedTime.IsZero() {
 			timeStr = " Deleted: Unknown "
 		} else {
-			timeStr = " Deleted: " + formatRelativeTime(m.notes[m.index].DeletedTime) + " "
+			timeStr = " Deleted: " + formatRelativeTime(m.Note.DeletedTime) + " "
 		}
 	}
 

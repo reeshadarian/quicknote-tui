@@ -65,11 +65,10 @@ func loadTheme() Theme {
 }
 
 // --- Buffer & Wrapping Helpers ---
-func stringToBuffer(s string) [][]rune {
+func stringToBuffer(s string) EditorBuffer {
 	if s == "" {
 		return [][]rune{{}}
 	}
-	s = strings.ReplaceAll(s, "\t", "    ")
 	lines := strings.Split(s, "\n")
 	buffer := make([][]rune, len(lines))
 	for i, line := range lines {

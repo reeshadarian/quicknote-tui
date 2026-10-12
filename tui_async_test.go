@@ -66,7 +66,7 @@ func TestQN012T02SaveAndHighlightNeverCrossNotes(t *testing.T) {
 	if err != nil || got.Content != textA {
 		t.Fatalf("A save lost: %+v %v", got, err)
 	}
-	if d := m.drafts[first.ID]; d.dirty || d.base.Revision != first.Revision+1 {
+	if d := m.drafts[first.ID]; d.needsSave || d.Note.Revision != first.Revision+1 {
 		t.Fatal("A session not reconciled")
 	}
 }
@@ -124,7 +124,7 @@ func TestQN012InactiveConflictPreservesSession(t *testing.T) {
 		t.Fatal("inactive conflict changed B save state")
 	}
 	d := m.drafts[first.ID]
-	if !d.dirty || !errors.Is(d.saveErr, ErrConflict) || d.content != local || d.base.Revision != first.Revision {
+	if !d.needsSave || !errors.Is(d.saveErr, ErrConflict) || d.buffer.Text() != local || d.Note.Revision != first.Revision {
 		t.Fatal("inactive conflict lost base/draft")
 	}
 	m, _ = rawUpdate(m, m.requestOpen(first.ID, false, nil, false)())
@@ -467,11 +467,11 @@ func TestQN012UpdateAndViewNeverCallStore(t *testing.T) {
 func TestQN012ImmutableSaveMetadataSnapshot(t *testing.T) {
 	m, _, _, _, _ := asyncModel(t)
 	m = typeTest(m, "draft")
-	m.notes[m.index].Tags = []string{"captured"}
-	m.notes[m.index].KillHash = "captured hash"
+	m.Note.Tags = []string{"captured"}
+	m.Note.KillHash = "captured hash"
 	cmd := m.requestSave()
-	m.notes[m.index].Tags[0] = "mutated"
-	m.notes[m.index].KillHash = "mutated hash"
+	m.Note.Tags[0] = "mutated"
+	m.Note.KillHash = "mutated hash"
 	result := cmd().(saveResult)
 	if result.Request.Snapshot.Tags[0] != "captured" || result.Request.Snapshot.KillHash != "captured hash" {
 		t.Fatal("worker captured mutable note metadata")
@@ -480,8 +480,8 @@ func TestQN012ImmutableSaveMetadataSnapshot(t *testing.T) {
 
 func TestQN012GhostNeverQueuesSave(t *testing.T) {
 	m, _, _, _, _ := asyncModel(t)
-	m.notes[m.index].ID = 0
-	m.notes[m.index].IsGhost = true
+	m.Note.ID = 0
+	m.Note.IsGhost = true
 	m = typeTest(m, "private")
 	if cmd := m.requestSave(); cmd != nil || len(m.saves) != 0 {
 		t.Fatal("ghost queued persistence")

@@ -14,6 +14,7 @@ import (
 )
 
 type Note struct {
+	SessionID   uint64 // In-memory identity only; never stored in SQLite.
 	ID          int
 	Content     string
 	UpdatedAt   string
