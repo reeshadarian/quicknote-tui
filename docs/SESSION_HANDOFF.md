@@ -14,7 +14,7 @@ The maintainer requested **QN-013 through QN-017**. All five are DONE in indepen
 | QN-014 | `f2320f2f916a985add919c9549576aff22717206` | Executable action registry, context/enabled reasons, generated help |
 | QN-015 | `e64bebb6c09292c58b0dae6417bfdb22f7b431b6` | Versioned default/legacy/custom keyboard profiles, validation and basic Commands menu |
 | QN-016 | `ffd2bb210d9d3bc412f56f17a18c59a0efdf936e` | Shared grapheme/cell wrapping, cursor/mouse mapping and responsive pure panels |
-| QN-017 | QN017_SHA_PENDING | Nested overlays, default-Cancel confirmations, safe reviewed replacements and recoverable errors |
+| QN-017 | a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b | Nested overlays, default-Cancel confirmations, safe reviewed replacements and recoverable errors |
 
 The specification also lists **QN-048** in M1. It remains outside that explicitly requested range and is **next READY**, followed by applicable M2/M3 tasks. Do not claim every M1/release feature is complete solely because QN-013–017 are done.
 

@@ -1,7 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: QN017_SHA_PENDING
+Latest implementation SHA: a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-013–QN-017 DONE; next READY QN-048 (outside requested range)
 Updated: 2026-10-12 UTC
@@ -312,7 +312,7 @@ PASS full suite (10.497s), race (13.422s), vet/build/diff/format, using prior CG
 
 ## QN-017 — Overlay stack and explicit confirmations (2026-10-12)
 
-**DONE**, implementation commit QN017_SHA_PENDING. `overlays.go`/`overlays_test.go` provide nested modal frames preserving parent focus, prompt contents and viewport. Escape closes only the top overlay and invalidates obsolete reads. Mouse events cannot edit through modals. Confirmation dialogs default to Cancel, guard draft identity/version and support explicit keyboard choice; core cancel controls cannot be unbound. Existing R-twice conflict reload remains supported through the confirmation framework.
+**DONE**, implementation commit a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b. `overlays.go`/`overlays_test.go` provide nested modal frames preserving parent focus, prompt contents and viewport. Escape closes only the top overlay and invalidates obsolete reads. Mouse events cannot edit through modals. Confirmation dialogs default to Cancel, guard draft identity/version and support explicit keyboard choice; core cancel controls cannot be unbound. Existing R-twice conflict reload remains supported through the confirmation framework.
 
 Ghost conversion of a persisted note and the legacy empty-note purge require confirmation; cancel preserves the original. Ghost conversion explicitly describes removal of the original and does not promise secure erasure. Persisted-to-ghost completion obtains a new memory session identity. Shell output is reviewed before replacement, with one undo transaction; cancel/failure leaves buffer/history intact. The shell execution itself is still synchronous and remains QN-039's async/timeout/cancel scope.
 
@@ -327,3 +327,16 @@ PASS final built-binary scripted PTY checks: independent SQLite writer lock with
 NOT RUN: human-operated Fedora/Zsh/Kitty/tmux/clipboard matrix, remote GitHub CI verification or release benchmarks. Scripted PTY is not manual Fedora evidence. Only synthetic temporary databases/files were used; schema remains user_version 2; no production backup/migration/retention policy change and no main changes.
 
 All five user-selected tasks QN-013–QN-017 are complete in separate implementation commits. QN-048 remains the specification's M1 math/code/snippet compatibility task outside that explicitly requested range; it is next READY. M2 durable TTL/pinning/ghost creation/Trash workflows and M3 fuzzy palette/search/sidebar remain assigned to their own tasks. Permanent-delete-from-Trash discoverability is still QN-032; the framework here confirms existing destructive paths without falsely marking that feature complete.
+
+
+### QN-013–017 final publication record
+
+| Task | Published implementation commit |
+|---|---|
+| QN-013 | `7cb44decf4155a19edf40ea77c4e7adb620b93c3` |
+| QN-014 | `f2320f2f916a985add919c9549576aff22717206` |
+| QN-015 | `e64bebb6c09292c58b0dae6417bfdb22f7b431b6` |
+| QN-016 | `ffd2bb210d9d3bc412f56f17a18c59a0efdf936e` |
+| QN-017 | `a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b` |
+
+Each was published directly to dev/v2 through the connected GitHub API using an expected-head check; main was never written or merged. The QN-017 API tree matched the locally staged/tested tree exactly. This final documentation follow-up resolves publication placeholders and records the next-session state; it makes no additional Go changes. Main remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.
