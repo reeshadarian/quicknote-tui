@@ -9,29 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// saveCurrent is synchronous until QN-012 introduces request generations.
-// Every legacy UI save uses it so transitions cannot discard a failed draft.
-func (m *model) saveCurrent() bool {
-	if len(m.notes) == 0 || m.index < 0 || m.index >= len(m.notes) {
-		return true
-	}
-	n := m.notes[m.index]
-	n.Content = bufferToString(m.buffer)
-	if n.IsGhost {
-		m.notes[m.index] = n
-		return true
-	}
-	saved, err := m.store.Save(n)
-	if err != nil {
-		m.recordSaveError(err)
-		return false
-	}
-	m.notes[m.index] = saved
-	m.needsSave = false
-	m.saveErr = nil
-	return true
-}
-
 func (m *model) recordSaveError(err error) {
 	m.saveErr = err
 	m.needsSave = true
@@ -41,7 +18,8 @@ func (m *model) recordSaveError(err error) {
 		m.confirmReload = false
 		m.conflictTop = 0
 		m.conflictInspect = false
-		m.conflictRemote, m.conflictReadErr = m.store.GetNote(m.notes[m.index].ID)
+		m.conflictRemote = Note{}
+		m.conflictReadErr = fmt.Errorf("loading stored version")
 	}
 	// Store the base revision with the failed buffer, never adopt the remote
 	// revision while retaining local text: doing so would bypass CAS on retry.
@@ -70,54 +48,7 @@ func (m *model) handleConflictKey(key string) {
 		}
 	case "pgdown":
 		m.conflictTop += max(1, m.viewport.Height-3)
-	case "c":
-		n := m.notes[m.index]
-		n.ID, n.Revision = 0, 0
-		n.Content = bufferToString(m.buffer)
-		n.DeletedAt = ""
-		saved, err := m.store.SaveCopy(n)
-		if err != nil {
-			m.conflictReadErr = fmt.Errorf("save copy failed: %w", err)
-			return
-		}
-		m.stashNote() // Original draft remains attached to its original base.
-		m.notes = append(m.notes, saved)
-		m.index = len(m.notes) - 1
-		m.needsSave = false
-		m.saveErr = nil
-		m.state = stateTyping
-		m.flashMsg = "Saved as a new copy; original kept"
-		m.stashNote()
-	case "r":
-		if !m.confirmReload {
-			m.confirmReload = true
-			return
-		}
-		// Re-read at confirmation, since the other process may have saved again.
-		latest, err := m.store.GetNote(m.notes[m.index].ID)
-		if err != nil {
-			m.conflictReadErr = err
-			m.confirmReload = false
-			return
-		}
-		if latest.DeletedAt != "" {
-			m.conflictRemote = latest
-			m.conflictReadErr = ErrTrashed
-			m.confirmReload = false
-			return
-		}
-		delete(m.drafts, latest.ID)
-		m.notes[m.index] = latest
-		m.buffer = stringToBuffer(latest.Content)
-		m.undoStack, m.redoStack = nil, nil
-		m.cursorRow, m.cursorCol, m.virtualPhysCol = 0, 0, 0
-		*m.viewportTop = 0
-		m.needsSave = false
-		m.saveErr = nil
-		m.state = stateTyping
-		m.highlightDirty = true
-		m.confirmReload = false
-		m.flashMsg = "Reloaded latest note"
+
 	}
 }
 
@@ -160,6 +91,9 @@ func (m model) conflictView() string {
 		height = 20
 	}
 	header := "Conflict: draft kept\nC Copy | R Reload\nI Compare | Esc Edit"
+	if m.copyPending {
+		header = "Saving copy…\nEsc Keep editing"
+	}
 	if m.confirmReload {
 		header = "Discard local draft?\nR Confirm | Esc Cancel"
 	}

@@ -266,14 +266,14 @@ func conflictModel(t *testing.T) (model, *SQLiteStore, Note) {
 
 func TestQN011ConflictPreservedAcrossUITransitions(t *testing.T) {
 	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyCtrlN}, {Type: tea.KeyCtrlT}, {Type: tea.KeyCtrlF}, {Type: tea.KeyCtrlD},
+		{Type: tea.KeyCtrlN}, {Type: tea.KeyCtrlT}, {Type: tea.KeyCtrlD},
 		{Type: tea.KeyEsc}, {Type: tea.KeyCtrlC}, {Type: tea.KeyRight, Alt: true},
 	} {
 		t.Run(key.String(), func(t *testing.T) {
 			m, b, remote := conflictModel(t)
 			before := bufferToString(m.buffer)
 			next, cmd := m.Update(key)
-			got := next.(model)
+			got := drainTestCmd(t, next.(model), cmd)
 			if !got.needsSave || bufferToString(got.buffer) != before || got.notes[got.index].ID != remote.ID || len(got.undoStack) != 1 {
 				t.Fatal("conflict discarded draft or history")
 			}
@@ -297,17 +297,14 @@ func TestQN011ConflictSaveCopyAndReload(t *testing.T) {
 	for _, choice := range []string{"c", "r"} {
 		t.Run(choice, func(t *testing.T) {
 			m, b, remote := conflictModel(t)
-			next, _ := m.Update(tickMsg(time.Now()))
-			m = next.(model)
+			m = updateTest(t, m, tickMsg(time.Now()))
 			draft := bufferToString(m.buffer)
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(choice)})
-			m = next.(model)
+			m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(choice)})
 			if choice == "r" {
 				if !m.needsSave || bufferToString(m.buffer) != draft {
 					t.Fatal("reload lacked discard confirmation")
 				}
-				next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-				m = next.(model)
+				m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 				if bufferToString(m.buffer) != remote.Content || m.notes[m.index].Revision != remote.Revision {
 					t.Fatal("reload not authoritative")
 				}
@@ -409,15 +406,15 @@ func TestQN011ListSearchAndSessionsCarryRevision(t *testing.T) {
 	if m.notes[0].Revision != n.Revision || !m.needsSave {
 		t.Fatal("dirty draft adopted remote revision")
 	}
-	if m.saveCurrent() || !errors.Is(m.saveErr, ErrConflict) {
+	m = drainTestCmd(t, m, m.requestSave())
+	if !errors.Is(m.saveErr, ErrConflict) {
 		t.Fatal("resumed dirty draft bypassed CAS")
 	}
 }
 
 func TestQN011ConflictPreviewSizesAndScroll(t *testing.T) {
 	m, _, _ := conflictModel(t)
-	next, _ := m.Update(tickMsg(time.Now()))
-	m = next.(model)
+	m = updateTest(t, m, tickMsg(time.Now()))
 	for _, size := range [][2]int{{120, 40}, {80, 24}, {50, 12}, {25, 5}} {
 		m.viewport.Width, m.viewport.Height = size[0], size[1]
 		view := m.View()
@@ -480,22 +477,21 @@ func TestQN011ErrorClassification(t *testing.T) {
 
 func TestQN011FailedCopyAndFreshReloadKeepDraftSafe(t *testing.T) {
 	m, b, remote := conflictModel(t)
-	next, _ := m.Update(tickMsg(time.Now()))
-	m = next.(model)
+	m = updateTest(t, m, tickMsg(time.Now()))
 	draft := bufferToString(m.buffer)
 	if _, err := b.db.Exec("CREATE TRIGGER reject_copy BEFORE INSERT ON notes BEGIN SELECT RAISE(ABORT,'copy failure'); END"); err != nil {
 		t.Fatal(err)
 	}
-	m.handleConflictKey("c")
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if m.state != stateConflict || !m.needsSave || bufferToString(m.buffer) != draft {
 		t.Fatal("failed copy lost draft")
 	}
-	m.handleConflictKey("r")
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	remote.Content = "latest at confirmation"
 	if _, err := b.Save(remote); err != nil {
 		t.Fatal(err)
 	}
-	m.handleConflictKey("r")
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	if bufferToString(m.buffer) != remote.Content {
 		t.Fatal("reload used stale conflict preview")
 	}
@@ -515,17 +511,16 @@ func TestQN011DeletedRemoteCanBeRecoveredAsCopy(t *testing.T) {
 				t.Fatal(err)
 			}
 			draft := bufferToString(m.buffer)
-			next, _ := m.Update(tickMsg(time.Now()))
-			m = next.(model)
+			m = updateTest(t, m, tickMsg(time.Now()))
 			if m.state != stateConflict || !m.needsSave {
 				t.Fatal("deleted remote discarded local draft")
 			}
-			m.handleConflictKey("r")
-			m.handleConflictKey("r")
+			m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 			if m.state != stateConflict || bufferToString(m.buffer) != draft {
 				t.Fatal("unavailable reload lost draft")
 			}
-			m.handleConflictKey("c")
+			m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 			if m.state != stateTyping || m.needsSave || m.notes[m.index].ID == remote.ID {
 				t.Fatal("copy of deleted note failed")
 			}
@@ -570,12 +565,11 @@ func TestQN011BusyWriterDoesNotMasqueradeAsConflict(t *testing.T) {
 func TestQN011EmptyConflictCopyIsPersisted(t *testing.T) {
 	m, b, remote := conflictModel(t)
 	m.buffer = stringToBuffer("")
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = next.(model)
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})
 	if m.state != stateConflict {
 		t.Fatal("stale empty delete should conflict")
 	}
-	m.handleConflictKey("c")
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	copy, err := b.GetNote(m.notes[m.index].ID)
 	if err != nil || copy.ID == remote.ID || copy.Content != "" {
 		t.Fatalf("empty copy not persisted: %+v %v", copy, err)

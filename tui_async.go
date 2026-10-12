@@ -1,0 +1,835 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Requests contain immutable values only. Workers never capture a model,
+// editor buffer, session map, or pointer owned by the event loop.
+type saveRequest struct {
+	Request      uint64
+	NoteID       int
+	LocalVersion uint64
+	Snapshot     Note
+}
+type saveResult struct {
+	Request saveRequest
+	Note    Note
+	Err     error
+}
+type loadRequest struct {
+	Generation       uint64
+	SourceID         int
+	SourceVersion    uint64
+	TargetID         int
+	Trash            bool
+	Reload           bool
+	Match            *Note
+	ResetLegacyTimer bool
+}
+type loadResult struct {
+	Request loadRequest
+	Notes   []Note
+	Note    Note
+	Err     error
+}
+type searchRequest struct {
+	Generation uint64
+	Query      string
+	Trash      bool
+}
+type searchDebounceMsg searchRequest
+type searchResult struct {
+	Request searchRequest
+	Notes   []Note
+	Err     error
+}
+type highlightMsg struct {
+	NoteID                        int
+	LocalVersion, Generation      uint64
+	originalText, highlightedText string
+}
+type recoveryResult struct {
+	Generation uint64
+	NoteID     int
+	Version    uint64
+	Note       Note
+	Err        error
+	Copy       bool
+}
+type mutationResult struct {
+	Generation uint64
+	NoteID     int
+	Version    uint64
+	Kind       string
+	Err        error
+}
+type helpResult struct {
+	Generation    uint64
+	Active, Trash int
+	Err           error
+}
+
+func (m model) activeID() int {
+	if len(m.notes) == 0 || m.index < 0 || m.index >= len(m.notes) {
+		return -1
+	}
+	return m.notes[m.index].ID
+}
+func (m *model) nextRequest() uint64 { m.requestSeq++; return m.requestSeq }
+func cloneNote(n Note) Note          { n.Tags = append([]string(nil), n.Tags...); return n }
+
+func (m *model) requestSave() tea.Cmd {
+	if m.activeID() < 0 {
+		return nil
+	}
+	n := cloneNote(m.notes[m.index])
+	n.Content = bufferToString(m.buffer)
+	if n.IsGhost || (n.ID == 0 && n.Content == "") {
+		m.notes[m.index] = n
+		m.needsSave = false
+		m.saveErr = nil
+		return nil
+	}
+	if _, pending := m.saves[n.ID]; pending {
+		return nil
+	}
+	m.saveErr = nil
+	m.stashNote()
+	return m.saveSnapshot(n, m.localVersion)
+}
+func (m *model) saveSnapshot(n Note, version uint64) tea.Cmd {
+	if m.saves == nil {
+		m.saves = make(map[int]saveRequest)
+	}
+	r := saveRequest{Request: m.nextRequest(), NoteID: n.ID, LocalVersion: version, Snapshot: cloneNote(n)}
+	m.saves[n.ID] = r
+	store := m.store
+	return func() tea.Msg { saved, err := store.Save(r.Snapshot); return saveResult{r, saved, err} }
+}
+func (m *model) receiveSave(msg saveResult) tea.Cmd {
+	r := msg.Request
+	pending, ok := m.saves[r.NoteID]
+	if !ok || pending.Request != r.Request {
+		return nil
+	}
+	delete(m.saves, r.NoteID)
+	active := m.activeID() == r.NoteID
+	if active {
+		m.stashNote()
+	}
+	d, ok := m.drafts[r.NoteID]
+	if !ok {
+		return nil
+	}
+	if msg.Err != nil {
+		d.dirty, d.saveErr = true, msg.Err
+		m.drafts[r.NoteID] = d
+		if active {
+			m.pendingAction = nil
+			m.recordSaveError(msg.Err)
+			return m.requestConflictRead()
+		}
+		m.flashMsg = fmt.Sprintf("Note %d save failed; draft kept", r.NoteID)
+		return m.finishExit()
+	}
+	// A successful CAS advances the base even when later edits remain dirty.
+	// Never install the response's older content over the live editor.
+	localBase := d.base
+	d.base = cloneNote(msg.Note)
+	if d.version != r.LocalVersion {
+		d.base.KillHash = localBase.KillHash
+		d.base.KillStart = localBase.KillStart
+		d.base.ExpiresAt = localBase.ExpiresAt
+		d.base.IsPinned = localBase.IsPinned
+	}
+	d.dirty = d.version != r.LocalVersion || d.content != r.Snapshot.Content
+	d.saveErr = nil
+	delete(m.drafts, r.NoteID)
+	m.drafts[msg.Note.ID] = d
+	for i := range m.notes {
+		if m.notes[i].ID == r.NoteID {
+			m.notes[i] = cloneNote(d.base)
+		}
+	}
+	for i := range m.allNotes {
+		if m.allNotes[i].ID == r.NoteID {
+			m.allNotes[i] = cloneNote(d.base)
+		}
+	}
+	if active {
+		m.notes[m.index] = cloneNote(d.base)
+		m.needsSave, m.saveErr = d.dirty, nil
+		if d.dirty {
+			return m.requestSave()
+		}
+		m.flashMsg = "Saved"
+		if m.pendingAction != nil && m.pendingActionID == r.NoteID {
+			if m.exitPending() {
+				return m.finishExit()
+			}
+			key := *m.pendingAction
+			m.pendingAction = nil
+			return m.runAction(key)
+		}
+	} else if d.dirty {
+		n := cloneNote(d.base)
+		n.Content = d.content
+		return m.saveSnapshot(n, d.version)
+	}
+	return m.finishExit()
+}
+
+func (m *model) requestOpen(id int, trash bool, match *Note, reload bool) tea.Cmd {
+	m.stashNote()
+	m.openGeneration++
+	m.loadPending = true
+	r := loadRequest{Generation: m.openGeneration, SourceID: m.activeID(), SourceVersion: m.localVersion, TargetID: id, Trash: trash, Reload: reload}
+	if match != nil {
+		n := cloneNote(*match)
+		r.Match = &n
+	}
+	store := m.store
+	return func() tea.Msg {
+		notes, err := store.ListChecked(r.Trash)
+		if err != nil {
+			return loadResult{Request: r, Err: err}
+		}
+		target := r.TargetID
+		if target < 0 {
+			if len(notes) > 0 {
+				target = notes[0].ID
+			}
+		}
+		var n Note
+		found := false
+		for _, candidate := range notes {
+			if candidate.ID == target {
+				n, found = candidate, true
+				break
+			}
+		}
+		if !found {
+			return loadResult{Request: r, Err: fmt.Errorf("note %d: %w", target, ErrNotFound)}
+		}
+		if target > 0 {
+			n, err = store.GetNote(target)
+		}
+		if err == nil && target > 0 && (n.DeletedAt != "") != r.Trash {
+			err = ErrWrongState
+		}
+		return loadResult{r, notes, n, err}
+	}
+}
+func (m *model) receiveLoad(msg loadResult) tea.Cmd {
+	r := msg.Request
+	if r.Generation != m.openGeneration {
+		return nil
+	}
+	m.loadPending = false
+	if r.SourceID != m.activeID() || r.SourceVersion != m.localVersion {
+		m.flashMsg = "Open canceled: draft changed"
+		return nil
+	}
+	if msg.Err != nil {
+		m.flashMsg = "Load failed: " + msg.Err.Error()
+		if r.Reload {
+			m.confirmReload = false
+			m.conflictReadErr = msg.Err
+		}
+		return nil
+	}
+	m.stashNote()
+	if d, ok := m.drafts[msg.Note.ID]; ok && d.base.Revision > msg.Note.Revision {
+		if r.Reload {
+			return m.requestOpen(r.TargetID, r.Trash, r.Match, true)
+		}
+		msg.Note = cloneNote(d.base)
+	}
+	if r.Reload {
+		delete(m.drafts, msg.Note.ID)
+	}
+	m.notes, m.allNotes = msg.Notes, append([]Note(nil), msg.Notes...)
+	m.index = 0
+	for i := range m.notes {
+		if m.notes[i].ID == msg.Note.ID {
+			m.index = i
+			break
+		}
+	}
+	if r.ResetLegacyTimer {
+		msg.Note.KillStart = time.Now()
+	}
+	m.notes[m.index] = msg.Note
+	m.activateNote() // Pure installation; I/O has already completed.
+	m.state = stateTyping
+	if r.Trash {
+		m.state = stateTrash
+	}
+	if r.Reload {
+		m.saveErr = nil
+		m.confirmReload = false
+		m.flashMsg = "Reloaded latest note"
+	}
+	if r.Match != nil {
+		if _, resumed := m.drafts[msg.Note.ID]; !resumed {
+			m.cursorRow = max(0, min(r.Match.MatchRow, len(m.buffer)-1))
+			m.cursorCol = max(0, min(r.Match.MatchCol, len(m.buffer[m.cursorRow])))
+			m.virtualPhysCol = m.cursorCol
+			*m.viewportTop = max(0, m.cursorRow-m.viewport.Height/2)
+		}
+	}
+	m.searchGeneration++
+	m.searchPending = false
+	m.searchQuery = ""
+	m.searchInput.Reset()
+	return nil
+}
+
+func (m *model) requestSearch() tea.Cmd {
+	m.searchGeneration++
+	m.searchPending = true
+	m.searchErr = nil
+	m.searchIndex = 0
+	m.searchResults = nil
+	r := searchRequest{m.searchGeneration, m.searchInput.Value(), m.prevState == stateTrash}
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return searchDebounceMsg(r) })
+}
+func (m *model) requestHighlight() tea.Cmd {
+	m.highlightGeneration++
+	m.highlightDirty = false
+	content, theme := bufferToString(m.buffer), m.theme
+	id, version, generation := m.activeID(), m.localVersion, m.highlightGeneration
+	m.cachedHighlight = content
+	return func() tea.Msg {
+		return highlightMsg{id, version, generation, content, computeHighlight(content, theme)}
+	}
+}
+func (m *model) requestConflictRead() tea.Cmd {
+	if m.state != stateConflict {
+		return nil
+	}
+	m.recoveryGeneration++
+	generation, id, version, store := m.recoveryGeneration, m.activeID(), m.localVersion, m.store
+	return func() tea.Msg {
+		n, err := store.GetNote(id)
+		return recoveryResult{generation, id, version, n, err, false}
+	}
+}
+func (m *model) requestCopy() tea.Cmd {
+	if m.copyPending {
+		return nil
+	}
+	m.copyPending = true
+	m.recoveryGeneration++
+	generation, id, version, store := m.recoveryGeneration, m.activeID(), m.localVersion, m.store
+	n := cloneNote(m.notes[m.index])
+	n.Content = bufferToString(m.buffer)
+	n.ID, n.Revision = 0, 0
+	n.DeletedAt = ""
+	return func() tea.Msg {
+		saved, err := store.SaveCopy(n)
+		return recoveryResult{generation, id, version, saved, err, true}
+	}
+}
+func (m *model) mutate(kind string) tea.Cmd {
+	if m.actionPending || m.activeID() <= 0 {
+		return nil
+	}
+	m.actionPending = true
+	m.openGeneration++
+	m.loadPending = false
+	m.mutationGeneration = m.nextRequest()
+	generation, id, version, revision, store := m.mutationGeneration, m.activeID(), m.localVersion, m.notes[m.index].Revision, m.store
+	return func() tea.Msg {
+		var err error
+		switch kind {
+		case "trash":
+			err = store.TrashCAS(id, revision)
+		case "restore":
+			err = store.RestoreCAS(id, revision)
+		case "purge", "ghost":
+			err = store.PurgeCAS(id, revision)
+		}
+		return mutationResult{generation, id, version, kind, err}
+	}
+}
+
+// All persistence/navigation keys go through this gate. While a save runs,
+// typing/resize remain available; a transition waits for the newest draft.
+func (m *model) afterSave(key tea.KeyMsg) tea.Cmd {
+	m.pendingAction = &key
+	m.pendingActionID = m.activeID()
+	if m.exitPending() && !m.needsSave && m.saveErr == nil {
+		return m.finishExit()
+	}
+	_, saving := m.saves[m.activeID()]
+	if m.needsSave || m.saveErr != nil || saving {
+		cmd := m.requestSave()
+		_, saving = m.saves[m.activeID()]
+		if m.needsSave || m.saveErr != nil || saving {
+			return cmd
+		}
+	}
+	m.pendingAction = nil
+	return m.runAction(key)
+}
+func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
+	switch key.String() {
+	case "enter":
+		if m.pendingOpen != nil {
+			n := *m.pendingOpen
+			m.pendingOpen = nil
+			return m.requestOpen(n.ID, m.prevState == stateTrash, &n, false)
+		}
+	case "esc", "ctrl+c":
+		if m.searchQuery != "" {
+			return m.requestOpen(-1, false, nil, false)
+		}
+		return tea.Quit
+	case "ctrl+f":
+		m.pendingAction = nil
+		m.pendingOpen = nil
+		m.openGeneration++
+		m.loadPending = false
+		m.stashNote()
+		m.prevState = m.state
+		m.state = stateSearch
+		m.searchInput.Focus()
+		m.searchInput.SetValue(m.searchQuery)
+		m.searchInput.CursorEnd()
+		return tea.Batch(textinput.Blink, m.requestSearch())
+	case "ctrl+t":
+		return m.requestOpen(-1, true, nil, false)
+	case "ctrl+u":
+		return m.requestOpen(-1, false, nil, false)
+	case "ctrl+n":
+		m.stashNote()
+		n := Note{Content: "", CreatedTime: time.Now(), UpdatedTime: time.Now()}
+		m.notes = append([]Note{n}, m.notes...)
+		m.allNotes = append([]Note(nil), m.notes...)
+		m.index = 0
+		delete(m.drafts, 0)
+		m.activateNote()
+		m.openGeneration++
+		m.loadPending = false
+	case "ctrl+s":
+		m.state = statePromptFile
+		m.fileInput.SetValue(extractTitle(bufferToString(m.buffer)) + ".md")
+		m.fileInput.CursorEnd()
+		m.fileInput.Focus()
+		return textinput.Blink
+	case "ctrl+d":
+		if m.activeID() <= 0 || m.notes[m.index].IsGhost {
+			return m.requestOpen(-1, false, nil, false)
+		}
+		if strings.TrimSpace(bufferToString(m.buffer)) == "" {
+			return m.mutate("purge")
+		}
+		return m.mutate("trash")
+	case "ctrl+g":
+		if !m.notes[m.index].IsGhost && m.activeID() > 0 {
+			return m.mutate("ghost")
+		}
+		m.notes[m.index].IsGhost = !m.notes[m.index].IsGhost
+		m.needsSave = true
+		return m.requestSave()
+	case "alt+right", "alt+left":
+		target := m.index + 1
+		if key.String() == "alt+left" {
+			target = m.index - 1
+		}
+		if target >= 0 && target < len(m.notes) {
+			return m.requestOpen(m.notes[target].ID, m.state == stateTrash, nil, false)
+		}
+	case "f1":
+		m.prevState = m.state
+		m.state = stateHelp
+		m.openGeneration++
+		m.loadPending = false
+		generation, store := m.openGeneration, m.store
+		m.viewport.SetContent(m.generateHelpText())
+		m.viewport.GotoTop()
+		return func() tea.Msg {
+			active, err := store.ListChecked(false)
+			if err != nil {
+				return helpResult{Generation: generation, Err: err}
+			}
+			trash, err := store.ListChecked(true)
+			count := func(notes []Note) int {
+				n := 0
+				for _, note := range notes {
+					if note.ID > 0 {
+						n++
+					}
+				}
+				return n
+			}
+			return helpResult{generation, count(active), count(trash), err}
+		}
+	}
+	return nil
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	beforeID, beforeContent := m.activeID(), bufferToString(m.buffer)
+	var cmd tea.Cmd
+	m, cmd = m.updateAsync(msg)
+	_, keyEdit := msg.(tea.KeyMsg)
+	if keyEdit && m.activeID() == beforeID && bufferToString(m.buffer) != beforeContent {
+		m.versionSeq++
+		m.localVersion = m.versionSeq
+		if m.state == stateTyping {
+			m.needsSave = true
+		}
+		m.highlightDirty = true
+	}
+	if m.highlightDirty {
+		cmd = tea.Batch(cmd, m.requestHighlight())
+	}
+	return m, cmd
+}
+func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case saveResult:
+		cmd := m.receiveSave(msg)
+		return m, cmd
+	case loadResult:
+		cmd := m.receiveLoad(msg)
+		return m, cmd
+	case searchDebounceMsg:
+		r := searchRequest(msg)
+		if r.Generation != m.searchGeneration || m.state != stateSearch {
+			return m, nil
+		}
+		store := m.store
+		return m, func() tea.Msg {
+			notes, err := store.SearchChecked(r.Query, r.Trash)
+			return searchResult{r, notes, err}
+		}
+	case searchResult:
+		r := msg.Request
+		if m.state == stateSearch && r.Generation == m.searchGeneration && r.Query == m.searchInput.Value() && r.Trash == (m.prevState == stateTrash) {
+			m.searchPending = false
+			m.searchErr = msg.Err
+			m.searchResults = msg.Notes
+			m.searchIndex = 0
+		}
+		return m, nil
+	case highlightMsg:
+		if msg.NoteID == m.activeID() && msg.LocalVersion == m.localVersion && msg.Generation == m.highlightGeneration && msg.originalText == bufferToString(m.buffer) {
+			m.cachedHighlight = msg.highlightedText
+		}
+		return m, nil
+	case initDataMsg:
+		if m.openGeneration != 0 || m.localVersion != 0 || bufferToString(m.buffer) != "" {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.flashMsg = "Load failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.theme = msg.theme
+		m.notes = msg.notes
+		m.allNotes = append([]Note(nil), msg.notes...)
+		m.index = 0
+		m.activateNote()
+		return m, nil
+	case recoveryResult:
+		if msg.Copy {
+			m.copyPending = false
+		}
+		if msg.Generation != m.recoveryGeneration || msg.NoteID != m.activeID() || msg.Version != m.localVersion || m.state != stateConflict {
+			if msg.Copy && msg.Err == nil {
+				m.flashMsg = fmt.Sprintf("Saved snapshot as copy %d; current draft kept", msg.Note.ID)
+			}
+			return m, nil
+		}
+		if !msg.Copy {
+			m.conflictRemote = msg.Note
+			m.conflictReadErr = msg.Err
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.conflictReadErr = fmt.Errorf("save copy failed: %w", msg.Err)
+			return m, nil
+		}
+		m.stashNote()
+		original := m.drafts[msg.NoteID]
+		original.recovered = true
+		m.drafts[msg.NoteID] = original
+		m.notes = append(m.notes, msg.Note)
+		m.allNotes = append([]Note(nil), m.notes...)
+		m.index = len(m.notes) - 1
+		// Copy recovery preserves the current cursor/history on the new identity.
+		m.saveErr = nil
+		m.needsSave = false
+		m.state = stateTyping
+		m.versionSeq++
+		m.localVersion = m.versionSeq
+		m.stashNote()
+		m.flashMsg = "Saved as a new copy; original kept"
+		return m, nil
+	case mutationResult:
+		if msg.Generation != m.mutationGeneration {
+			return m, nil
+		}
+		m.actionPending = false
+		if msg.NoteID != m.activeID() {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.recordSaveError(msg.Err)
+			cmd := m.requestConflictRead()
+			return m, cmd
+		}
+		if msg.Version != m.localVersion {
+			m.recordSaveError(ErrNotFound)
+			cmd := m.requestConflictRead()
+			return m, cmd
+		}
+		if msg.Kind == "ghost" {
+			delete(m.drafts, msg.NoteID)
+			m.notes[m.index].ID = 0
+			m.notes[m.index].Revision = 0
+			m.notes[m.index].IsGhost = true
+			m.needsSave = false
+			return m, nil
+		}
+		delete(m.drafts, msg.NoteID)
+		if msg.Kind == "restore" {
+			load := m.requestOpen(msg.NoteID, false, nil, false)
+			return m, func() tea.Msg { result := load().(loadResult); result.Request.ResetLegacyTimer = true; return result }
+		}
+		cmd := m.requestOpen(-1, false, nil, false)
+		return m, cmd
+	case helpResult:
+		if m.state == stateHelp && msg.Generation == m.openGeneration {
+			if msg.Err != nil {
+				m.flashMsg = "Load failed: " + msg.Err.Error()
+			} else {
+				m.statActive = msg.Active
+				m.statTrash = msg.Trash
+				m.viewport.SetContent(m.generateHelpText())
+			}
+		}
+		return m, nil
+	case tickMsg:
+		m.timerNow = time.Time(msg)
+		var save tea.Cmd
+		if m.state != stateConflict && m.state != stateTrash && m.state != stateSearch && m.saveErr == nil {
+			if m.activeID() >= 0 {
+				hash, duration := getKillTimerInfo(bufferToString(m.buffer))
+				if m.notes[m.index].KillHash != hash {
+					m.notes[m.index].KillHash = hash
+					m.notes[m.index].KillStart = time.Time(msg)
+					m.versionSeq++
+					m.localVersion = m.versionSeq
+					m.needsSave = true
+				}
+				if duration != nil && time.Time(msg).After(m.notes[m.index].KillStart.Add(*duration)) && !m.actionPending {
+					save = m.afterSave(tea.KeyMsg{Type: tea.KeyCtrlD})
+				} else if m.needsSave && time.Since(m.lastActivity) > 2*time.Second {
+					save = m.requestSave()
+				}
+			}
+		}
+		return m, tea.Batch(tickCmd(), save)
+	case tea.KeyMsg:
+		m.lastActivity = time.Now()
+		key := msg.String()
+		if m.state == stateConflict {
+			switch key {
+			case "c":
+				if m.loadPending {
+					return m, nil
+				}
+				cmd := m.requestCopy()
+				return m, cmd
+			case "r":
+				if !m.confirmReload {
+					m.confirmReload = true
+					return m, nil
+				}
+				cmd := m.requestOpen(m.activeID(), false, nil, true)
+				return m, cmd
+			default:
+				if key == "esc" {
+					m.openGeneration++
+					m.loadPending = false
+					m.recoveryGeneration++
+				}
+				m.handleConflictKey(key)
+				return m, nil
+			}
+		}
+		if m.state == stateSearch {
+			switch key {
+			case "esc", "ctrl+c":
+				m.pendingAction = nil
+				m.pendingOpen = nil
+				m.state = m.prevState
+				m.searchInput.Reset()
+				m.searchGeneration++
+				m.searchPending = false
+				m.openGeneration++
+				m.loadPending = false
+			case "up", "ctrl+k":
+				m.searchIndex = max(0, m.searchIndex-1)
+			case "down", "ctrl+j":
+				m.searchIndex = min(max(0, len(m.searchResults)-1), m.searchIndex+1)
+			case "enter":
+				if !m.searchPending && m.searchErr == nil && m.searchIndex >= 0 && m.searchIndex < len(m.searchResults) {
+					n := m.searchResults[m.searchIndex]
+					m.pendingOpen = &n
+					cmd := m.afterSave(msg)
+					return m, cmd
+				}
+			default:
+				before := m.searchInput.Value()
+				var cmd tea.Cmd
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				if before != m.searchInput.Value() {
+					m.pendingAction = nil
+					m.pendingOpen = nil
+					m.openGeneration++
+					m.loadPending = false
+					searchCmd := m.requestSearch()
+					return m, tea.Batch(cmd, searchCmd)
+				}
+				return m, cmd
+			}
+			return m, nil
+		}
+		if m.state == stateTrash {
+			switch key {
+			case "esc", "ctrl+t":
+				cmd := m.requestOpen(-1, false, nil, false)
+				return m, cmd
+			case "ctrl+r":
+				cmd := m.mutate("restore")
+				return m, cmd
+			case "ctrl+f", "f1", "alt+left", "alt+right":
+				cmd := m.runAction(msg)
+				return m, cmd
+			}
+		}
+		if m.state == stateHelp && (key == "esc" || key == "ctrl+c" || key == "enter" || key == "f1") {
+			m.state = m.prevState
+			m.openGeneration++
+			return m, nil
+		}
+		if m.state == stateTyping {
+			if key == "ctrl+f" && !m.actionPending {
+				cmd := m.runAction(msg)
+				return m, cmd
+			}
+			if m.actionPending { // An irreversible operation already owns this snapshot.
+				if key == "esc" {
+					m.flashMsg = "Operation pending; draft kept"
+					return m, nil
+				}
+			}
+			if m.saveErr != nil && key == "enter" {
+				cmd := m.requestSave()
+				return m, cmd
+			}
+			switch key {
+			case "ctrl+u":
+				if m.activeID() > 0 {
+					m.needsSave = true
+				}
+				cmd := m.afterSave(msg)
+				return m, cmd
+			case "ctrl+d":
+				if strings.TrimSpace(bufferToString(m.buffer)) == "" {
+					cmd := m.runAction(msg)
+					return m, cmd
+				}
+				cmd := m.afterSave(msg)
+				return m, cmd
+			case "ctrl+g", "ctrl+n", "ctrl+t", "ctrl+f", "ctrl+s", "esc", "ctrl+c", "alt+left", "alt+right", "f1":
+				if m.actionPending {
+					return m, nil
+				}
+				cmd := m.afterSave(msg)
+				return m, cmd
+			}
+		}
+	}
+	next, cmd := m.updateEditor(msg)
+	return next.(model), cmd
+}
+func (m model) saveStatus() string {
+	if m.saveErr != nil {
+		if errors.Is(m.saveErr, ErrConflict) {
+			return "Conflict — Enter"
+		}
+		return "Save failed — Enter"
+	}
+	if m.actionPending {
+		return "Working…"
+	}
+	if _, ok := m.saves[m.activeID()]; ok {
+		return "Saving…"
+	}
+	if m.activeID() >= 0 && m.notes[m.index].IsGhost {
+		return "Ghost"
+	}
+	if m.needsSave {
+		return "Unsaved"
+	}
+	if m.loadPending {
+		return "Loading…"
+	}
+	return "Saved"
+}
+
+func (m model) exitPending() bool {
+	return m.pendingAction != nil && (m.pendingAction.String() == "esc" || m.pendingAction.String() == "ctrl+c")
+}
+
+// Quit waits for every outstanding draft, including notes no longer active.
+// A failed inactive save reopens its retained session for explicit recovery.
+func (m *model) finishExit() tea.Cmd {
+	if !m.exitPending() || len(m.saves) > 0 {
+		return nil
+	}
+	m.stashNote()
+	for id, d := range m.drafts {
+		if !d.dirty || d.base.IsGhost || d.recovered {
+			continue
+		}
+		if d.saveErr == nil {
+			n := cloneNote(d.base)
+			n.Content = d.content
+			return m.saveSnapshot(n, d.version)
+		}
+		m.pendingAction = nil
+		found := -1
+		for i, n := range m.notes {
+			if n.ID == id {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			m.notes = append(m.notes, d.base)
+			found = len(m.notes) - 1
+		}
+		m.index = found
+		m.notes[m.index] = d.base
+		m.activateNote()
+		m.recordSaveError(d.saveErr)
+		return m.requestConflictRead()
+	}
+	key := *m.pendingAction
+	m.pendingAction = nil
+	return m.runAction(key)
+}

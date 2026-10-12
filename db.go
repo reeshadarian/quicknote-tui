@@ -253,8 +253,16 @@ func loadNoteContent(db *sql.DB, id int) string {
 
 // Blazing fast Full-Text Search via SQLite with exact-line matching
 func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
+	notes, _ := searchNotesChecked(db, query, inTrash)
+	return notes
+}
+
+func searchNotesChecked(db *sql.DB, query string, inTrash bool) ([]Note, error) {
 	if strings.TrimSpace(query) == "" {
-		notes := loadNotes(db, inTrash)
+		notes, err := loadNotesChecked(db, inTrash)
+		if err != nil {
+			return nil, err
+		}
 		for i := range notes {
 			cleanContent := strings.TrimSpace(strings.ReplaceAll(notes[i].Content, "\n", " "))
 			if len(cleanContent) > 55 {
@@ -263,7 +271,7 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 				notes[i].Preview = cleanContent
 			}
 		}
-		return notes
+		return notes, nil
 	}
 
 	safeQuery := strings.ReplaceAll(query, "\"", "\"\"")
@@ -290,7 +298,7 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 
 	rows, err := db.Query(sqlQuery, matchQuery)
 	if err != nil {
-		return []Note{}
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -299,7 +307,9 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 		var n Note
 		var content, updatedAt, highlighted string
 
-		_ = rows.Scan(&n.ID, &content, &updatedAt, &n.Revision, &n.ExpiresAt, &n.IsPinned, &highlighted)
+		if err := rows.Scan(&n.ID, &content, &updatedAt, &n.Revision, &n.ExpiresAt, &n.IsPinned, &highlighted); err != nil {
+			return nil, err
+		}
 		n.Content = content
 
 		lines := strings.Split(highlighted, "\n")
@@ -343,10 +353,15 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 		}
 	}
 
-	return results
+	return results, rows.Err()
 }
 
 func loadNotes(db *sql.DB, inTrash bool) []Note {
+	notes, _ := loadNotesChecked(db, inTrash)
+	return notes
+}
+
+func loadNotesChecked(db *sql.DB, inTrash bool) ([]Note, error) {
 	var query string
 	if inTrash {
 		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, n.revision, n.expires_at, n.is_pinned, GROUP_CONCAT(t.tag)
@@ -360,7 +375,7 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 
 	rows, err := db.Query(query)
 	if err != nil {
-		return []Note{{ID: 0, Content: "", UpdatedTime: time.Now(), CreatedTime: time.Now()}}
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -371,35 +386,39 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 		var killHash, killStartStr, rawTags sql.NullString
 
 		err := rows.Scan(&n.ID, &n.Preview, &rawUpdated, &rawCreated, &rawDeleted, &killHash, &killStartStr, &n.Revision, &n.ExpiresAt, &n.IsPinned, &rawTags)
-		if err == nil {
-			n.UpdatedTime, n.UpdatedAt = parseSQLiteTime(rawUpdated)
-			n.CreatedTime, n.CreatedAt = parseSQLiteTime(rawCreated)
+		if err != nil {
+			return nil, err
+		}
+		n.UpdatedTime, n.UpdatedAt = parseSQLiteTime(rawUpdated)
+		n.CreatedTime, n.CreatedAt = parseSQLiteTime(rawCreated)
 
-			if n.CreatedAt == "" {
-				n.CreatedTime = n.UpdatedTime
-				n.CreatedAt = n.UpdatedAt
-			}
+		if n.CreatedAt == "" {
+			n.CreatedTime = n.UpdatedTime
+			n.CreatedAt = n.UpdatedAt
+		}
 
-			n.DeletedTime, n.DeletedAt = parseSQLiteTime(rawDeleted)
+		n.DeletedTime, n.DeletedAt = parseSQLiteTime(rawDeleted)
 
-			if killHash.Valid {
-				n.KillHash = killHash.String
+		if killHash.Valid {
+			n.KillHash = killHash.String
+		}
+		if killStartStr.Valid && killStartStr.String != "" {
+			if t, err := time.Parse(time.RFC3339, killStartStr.String); err == nil {
+				n.KillStart = t
 			}
-			if killStartStr.Valid && killStartStr.String != "" {
-				if t, err := time.Parse(time.RFC3339, killStartStr.String); err == nil {
-					n.KillStart = t
-				}
-			}
+		}
 
-			if rawTags.Valid && rawTags.String != "" {
-				n.Tags = strings.Split(rawTags.String, ",")
-			} else {
-				n.Tags = []string{}
-			}
+		if rawTags.Valid && rawTags.String != "" {
+			n.Tags = strings.Split(rawTags.String, ",")
+		} else {
+			n.Tags = []string{}
 		}
 		notes = append(notes, n)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	if len(notes) == 0 {
 		if inTrash {
 			notes = append(notes, Note{ID: -1, Content: "--- Trash is Empty ---", UpdatedAt: ""})
@@ -407,7 +426,7 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 			notes = append(notes, Note{ID: 0, Content: "", UpdatedTime: time.Now(), CreatedTime: time.Now()})
 		}
 	}
-	return notes
+	return notes, nil
 }
 
 // saveNoteChecked atomically persists content and tags. On failure the

@@ -21,8 +21,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	m.cursorCol = 5
 	*m.viewportTop = 4
 	m.undoStack = []textState{{content: "alpha", row: 0, col: 3}}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight, Alt: true}) // navigation alt+right
-	m = next.(model)
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRight, Alt: true}) // navigation alt+right
 	if m.notes[m.index].ID != b {
 		t.Fatalf("navigation opened ID %d, want %d", m.notes[m.index].ID, b)
 	}
@@ -36,8 +35,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	m.needsSave = true
 	m.cursorCol = 2
 	m.undoStack = []textState{{content: "beta"}}
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft, Alt: true}) // navigation alt+left
-	m = next.(model)
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyLeft, Alt: true}) // navigation alt+left
 	if m.notes[m.index].ID != a {
 		t.Fatal("did not return to A")
 	}
@@ -59,8 +57,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	if got := loadNoteContent(db, a); strings.TrimSuffix(got, "\n") != "alpha revised" {
 		t.Fatalf("A not saved: %q", got)
 	}
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight, Alt: true})
-	m = next.(model)
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRight, Alt: true})
 	if got := bufferToString(m.buffer); strings.TrimSuffix(got, "\n") != "beta revised" {
 		t.Fatalf("B draft lost: %q", got)
 	}

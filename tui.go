@@ -75,15 +75,32 @@ type model struct {
 	needsSave bool
 	timerNow  time.Time
 
-	searchResults   []Note
-	searchIndex     int
-	drafts          map[int]noteSession
-	saveErr         error
-	conflictRemote  Note
-	conflictReadErr error
-	confirmReload   bool
-	conflictTop     int
-	conflictInspect bool
+	searchResults       []Note
+	searchIndex         int
+	drafts              map[int]noteSession
+	saveErr             error
+	conflictRemote      Note
+	conflictReadErr     error
+	confirmReload       bool
+	conflictTop         int
+	conflictInspect     bool
+	mutationGeneration  uint64
+	copyPending         bool
+	pendingOpen         *Note
+	pendingActionID     int
+	requestSeq          uint64
+	localVersion        uint64
+	versionSeq          uint64
+	openGeneration      uint64
+	searchGeneration    uint64
+	highlightGeneration uint64
+	loadPending         bool
+	searchPending       bool
+	searchErr           error
+	saves               map[int]saveRequest
+	pendingAction       *tea.KeyMsg
+	actionPending       bool
+	recoveryGeneration  uint64
 }
 
 type noteSession struct {
@@ -93,6 +110,8 @@ type noteSession struct {
 	dirty                     bool
 	base                      Note
 	saveErr                   error
+	version                   uint64
+	recovered                 bool
 }
 
 func (m *model) stashNote() {
@@ -110,30 +129,26 @@ func (m *model) stashNote() {
 	if m.viewportTop != nil {
 		top = *m.viewportTop
 	}
-	m.drafts[id] = noteSession{content: bufferToString(m.buffer),
+	previous := m.drafts[id]
+	content := bufferToString(m.buffer)
+	recovered := previous.recovered && previous.content == content && previous.version == m.localVersion
+	m.drafts[id] = noteSession{recovered: recovered, content: content,
 		row: m.cursorRow, col: m.cursorCol, virtualCol: m.virtualPhysCol, top: top,
 		undo: append([]textState(nil), m.undoStack...),
-		redo: append([]textState(nil), m.redoStack...), dirty: m.needsSave, base: m.notes[m.index], saveErr: m.saveErr}
+		redo: append([]textState(nil), m.redoStack...), dirty: m.needsSave, base: m.notes[m.index], saveErr: m.saveErr, version: m.localVersion}
 }
 func (m *model) activateNote() bool {
 	if len(m.notes) == 0 || m.index < 0 || m.index >= len(m.notes) {
 		return false
 	}
 	n := &m.notes[m.index]
-	if n.ID > 0 {
-		fresh, err := m.store.GetNote(n.ID)
-		if err != nil {
-			m.saveErr = err
-			m.flashMsg = "Load failed: " + err.Error()
-			return false
-		}
-		*n = fresh
-	}
 	m.buffer = stringToBuffer(n.Content)
 	m.cursorRow, m.cursorCol, m.virtualPhysCol = 0, 0, 0
 	m.undoStack, m.redoStack = nil, nil
 	m.needsSave = false
 	m.saveErr = nil
+	m.versionSeq++
+	m.localVersion = m.versionSeq
 	if m.viewportTop == nil {
 		m.viewportTop = new(int)
 	}
@@ -143,6 +158,7 @@ func (m *model) activateNote() bool {
 			*n = d.base
 		}
 		m.saveErr = d.saveErr
+		m.localVersion = d.version
 		m.buffer = stringToBuffer(d.content)
 		m.cursorRow, m.cursorCol, m.virtualPhysCol = d.row, d.col, d.virtualCol
 		m.undoStack = append([]textState(nil), d.undo...)
@@ -168,11 +184,6 @@ func (m *model) activateNote() bool {
 
 type tickMsg time.Time
 
-type highlightMsg struct {
-	originalText    string
-	highlightedText string
-}
-
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -196,6 +207,7 @@ func pushStack(stack []textState, val string, row, col int) []textState {
 }
 
 type initDataMsg struct {
+	err   error
 	theme Theme
 	notes []Note
 }
@@ -214,10 +226,10 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 	// Instantly return the model without touching the disk or database
 	m := model{
 		store:          NewSQLiteStore(db),
-		notes:          []Note{{ID: 0, Content: "Loading...", Preview: ""}},
+		notes:          []Note{{ID: 0, Content: "", Preview: ""}},
 		allNotes:       []Note{},
 		index:          0,
-		buffer:         stringToBuffer("Loading..."),
+		buffer:         stringToBuffer(""),
 		cursorRow:      0,
 		cursorCol:      0,
 		virtualPhysCol: 0,
@@ -234,25 +246,30 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 		flashMsg: fmt.Sprintf("Started in %.2fms", float64(time.Since(startTime).Nanoseconds())/1e6),
 	}
 
-	m.cachedHighlight = "Loading..."
+	m.cachedHighlight = ""
 	m.highlightDirty = false
 
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	// Spin off I/O blocks into a background thread
+	// Capture the store independently of the model for background I/O.
+	store := m.store
 	loadDataCmd := func() tea.Msg {
 		theme := loadTheme()
-		notes := m.store.List(false)
+		notes, err := store.ListChecked(false)
+		if err != nil {
+			return initDataMsg{err: err}
+		}
 
 		if len(notes) == 0 {
 			notes = []Note{{ID: 0, Content: "", Preview: ""}}
 		} else if notes[0].ID > 0 {
-			fresh, err := m.store.GetNote(notes[0].ID)
-			if err == nil {
-				notes[0] = fresh
+			fresh, err := store.GetNote(notes[0].ID)
+			if err != nil {
+				return initDataMsg{err: err}
 			}
+			notes[0] = fresh
 		}
 
 		return initDataMsg{theme: theme, notes: notes}
@@ -264,47 +281,6 @@ func (m model) Init() tea.Cmd {
 		cursorBlinkCmd(),
 		loadDataCmd, // Send the msg when done
 	)
-}
-
-func (m model) reload() model {
-	inTrash := m.state == stateTrash
-	if m.state == stateSearch {
-		inTrash = m.prevState == stateTrash
-	}
-
-	if m.searchQuery != "" {
-		m.notes = m.store.Search(m.searchQuery, inTrash)
-	} else {
-		m.allNotes = m.store.List(inTrash)
-		m.notes = m.allNotes
-	}
-
-	if len(m.notes) == 0 {
-		m.notes = []Note{{ID: -1, Content: "--- No notes found ---", Preview: "--- No notes found ---"}}
-	}
-
-	if m.index >= len(m.notes) {
-		m.index = len(m.notes) - 1
-	}
-	if m.index < 0 {
-		m.index = 0
-	}
-
-	if len(m.notes) > 0 {
-		if m.notes[m.index].ID > 0 {
-			if fresh, err := m.store.GetNote(m.notes[m.index].ID); err == nil {
-				m.notes[m.index] = fresh
-			} else {
-				m.saveErr = err
-				m.flashMsg = "Load failed: " + err.Error()
-			}
-		}
-		m.buffer = stringToBuffer(m.notes[m.index].Content)
-		m.cursorRow, m.cursorCol = 0, 0
-		m.virtualPhysCol = 0
-		m.highlightDirty = true
-	}
-	return m
 }
 
 func (m *model) generateHelpText() string {
@@ -398,7 +374,7 @@ func isWordBoundary(r rune) bool {
 		r == '{' || r == '}' || r == '"' || r == '\''
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
@@ -417,112 +393,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	inTrashContext := m.state == stateTrash ||
-		(m.state == stateHelp && m.prevState == stateTrash) ||
-		(m.state == stateSearch && m.prevState == stateTrash)
-
-	if len(m.notes) > 0 && !inTrashContext && m.state != stateConflict && m.saveErr == nil {
-		currentDoc := bufferToString(m.buffer)
-		hash, duration := getKillTimerInfo(currentDoc)
-
-		if m.notes[m.index].KillHash != hash {
-			m.notes[m.index].KillHash = hash
-			m.notes[m.index].KillStart = time.Now()
-		}
-
-		if duration != nil {
-			killAt := m.notes[m.index].KillStart.Add(*duration)
-			if time.Now().After(killAt) {
-				if !m.notes[m.index].IsGhost {
-					m.notes[m.index].Content = currentDoc
-					if !m.saveCurrent() {
-						goto Finalize
-					}
-					if err := m.store.TrashCAS(m.notes[m.index].ID, m.notes[m.index].Revision); err != nil {
-						m.recordSaveError(err)
-						goto Finalize
-					}
-				}
-
-				delete(m.drafts, m.notes[m.index].ID)
-				m.notes = append(m.notes[:m.index], m.notes[m.index+1:]...)
-				if len(m.notes) == 0 {
-					m.notes = []Note{{Content: "", UpdatedAt: time.Now().Format("2006-01-02 15:04:05")}}
-				}
-				if m.index >= len(m.notes) {
-					m.index = len(m.notes) - 1
-				}
-				if m.notes[m.index].ID > 0 {
-					if fresh, err := m.store.GetNote(m.notes[m.index].ID); err == nil {
-						m.notes[m.index] = fresh
-					} else {
-						m.saveErr = err
-						m.flashMsg = "Load failed: " + err.Error()
-					}
-				}
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				m.cursorRow, m.cursorCol = 0, 0
-				m.virtualPhysCol = 0
-
-				if _, ok := msg.(tickMsg); ok {
-					return m, tickCmd()
-				}
-				return m, nil
-			}
-		}
-	}
-
 	switch msg := msg.(type) {
-
-	case initDataMsg:
-		// Received the background data! Hydrate the UI.
-		m.theme = msg.theme
-		m.allNotes = msg.notes
-		m.notes = msg.notes
-		m.index = 0
-		initialText := ""
-		if len(m.notes) > 0 {
-			initialText = m.notes[0].Content
-		}
-		m.buffer = stringToBuffer(initialText)
-
-		// Immediately chain a command to calculate syntax highlighting on the new data
-		highlightCmd := func() tea.Msg {
-			content := bufferToString(m.buffer)
-			return highlightMsg{
-				originalText:    content,
-				highlightedText: computeHighlight(content, m.theme),
-			}
-		}
-		return m, highlightCmd
-
-	case highlightMsg:
-		if bufferToString(m.buffer) == msg.originalText {
-			m.cachedHighlight = msg.highlightedText
-		}
-		return m, nil
-
-	case tickMsg:
-		m.timerNow = time.Time(msg)
-		cmds = append(cmds, tickCmd())
-		if m.needsSave && m.state != stateConflict && m.saveErr == nil && time.Since(m.lastActivity) > 2*time.Second {
-			if len(m.notes) > 0 && m.index < len(m.notes) && !m.notes[m.index].IsGhost {
-				m.notes[m.index].Content = bufferToString(m.buffer)
-
-				if !m.saveCurrent() {
-					goto Finalize
-				}
-				savedNote := m.notes[m.index]
-
-				// 2. Instantly inform the user in the status bar
-				if savedNote.IsDuplicate {
-					m.flashMsg = "⚠️ Duplicate note detected!"
-				} else {
-					m.flashMsg = "Auto-saved"
-				}
-			}
-		}
-
 	case tea.WindowSizeMsg:
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - 1
@@ -614,117 +485,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.freeScroll = false
 		m.highlightDirty = true
 
-		if m.state == stateConflict {
-			m.handleConflictKey(msg.String())
-			goto Finalize
-		}
-		if m.flashMsg != "" && m.saveErr == nil {
-			m.flashMsg = ""
-		}
-
-		if m.state == stateTyping && m.saveErr != nil && msg.String() == "enter" {
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			goto Finalize
-		}
-		if m.state == stateSearch {
-			switch msg.String() {
-			case "esc", "ctrl+c":
-				m.state = m.prevState
-				m.searchInput.Reset()
-
-			case "up", "ctrl+k":
-				if m.searchIndex > 0 {
-					m.searchIndex--
-				}
-
-			case "down", "ctrl+j":
-				if m.searchIndex < len(m.searchResults)-1 {
-					m.searchIndex++
-				}
-
-			case "enter":
-				if m.searchIndex >= 0 && m.searchIndex < len(m.searchResults) {
-					selectedNote := m.searchResults[m.searchIndex]
-					if selectedNote.ID <= 0 {
-						goto Finalize
-					}
-
-					// Search results are not the editor's authoritative note list.
-					// Save the current draft before replacing either its identity
-					// or its buffer. ctrl+f usually already saved it.
-					if m.prevState != stateTrash && m.needsSave && len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
-						if !m.saveCurrent() {
-							goto Finalize
-						}
-					}
-
-					inTrash := m.prevState == stateTrash
-					oldNotes, oldIndex := m.notes, m.index
-					m.notes = m.store.List(inTrash)
-					foundIndex := -1
-					for i := range m.notes {
-						if m.notes[i].ID == selectedNote.ID {
-							foundIndex = i
-							break
-						}
-					}
-					if foundIndex < 0 {
-						m.notes, m.index = oldNotes, oldIndex
-						m.flashMsg = "Note no longer available"
-						goto Finalize
-					}
-					m.index = foundIndex
-					if !m.activateNote() {
-						m.notes, m.index = oldNotes, oldIndex
-						goto Finalize
-					}
-					m.highlightDirty = true
-					m.cachedHighlight = computeHighlight(m.notes[m.index].Content, m.theme)
-					m.state = stateTyping
-					if inTrash {
-						m.state = stateTrash // A trashed note must never enter the editable state.
-					}
-					m.searchQuery = ""
-					m.searchInput.Reset()
-
-					if _, resumed := m.drafts[selectedNote.ID]; !resumed {
-						m.cursorRow = selectedNote.MatchRow
-						if m.cursorRow < 0 || m.cursorRow >= len(m.buffer) {
-							m.cursorRow = 0
-						}
-						m.cursorCol = selectedNote.MatchCol
-						if m.cursorCol < 0 {
-							m.cursorCol = 0
-						}
-						if m.cursorCol > len(m.buffer[m.cursorRow]) {
-							m.cursorCol = len(m.buffer[m.cursorRow])
-						}
-						m.virtualPhysCol = m.cursorCol
-						*m.viewportTop = m.cursorRow - (m.viewport.Height / 2)
-						if *m.viewportTop < 0 {
-							*m.viewportTop = 0
-						}
-					}
-				}
-
-			default:
-				prevVal := m.searchInput.Value()
-				m.searchInput, cmd = m.searchInput.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-
-				// Execute fuzzy search instantly if input changed
-				if m.searchInput.Value() != prevVal {
-					m.searchIndex = 0
-					m.searchResults = m.store.Search(m.searchInput.Value(), m.prevState == stateTrash)
-				}
-			}
-			goto Finalize
-		}
-
 		if m.state == statePipe {
 			switch msg.String() {
 			case "esc", "ctrl+c":
@@ -805,94 +565,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.state == stateTrash {
-			switch msg.String() {
-			case "esc", "ctrl+t":
-				m.state = stateTyping
-				m.saveErr = nil
-				m.searchQuery = ""
-				m.searchInput.SetValue("")
-				m.index = 0
-				m = m.reload()
-				clampCursor()
-				m.virtualPhysCol = 0
-			case "f1":
-				m.prevState = m.state
-				m.state = stateHelp
-				m.statActive = len(m.store.List(false))
-				m.statTrash = len(m.allNotes)
-				m.viewport.SetContent(m.generateHelpText())
-				m.viewport.GotoTop()
-			case "ctrl+f":
-				m.prevState = m.state
-				m.state = stateSearch
-				m.searchInput.Focus()
-				m.searchInput.SetValue("") // Clear previous search
-				// Dynamically check if we launched this from the trash
-				m.searchResults = m.store.Search("", m.prevState == stateTrash)
-				m.searchIndex = 0
-				cmds = append(cmds, textinput.Blink)
-			case "alt+right":
-				if m.index < len(m.notes)-1 {
-					m.index++
-					if m.notes[m.index].ID > 0 {
-						if fresh, err := m.store.GetNote(m.notes[m.index].ID); err == nil {
-							m.notes[m.index] = fresh
-						} else {
-							m.saveErr = err
-							m.flashMsg = "Load failed: " + err.Error()
-						}
-					}
-					m.buffer = stringToBuffer(m.notes[m.index].Content)
-					clampCursor()
-					m.virtualPhysCol = 0
-					*m.viewportTop = 0
-				}
-			case "alt+left":
-				if m.index > 0 {
-					m.index--
-					if m.notes[m.index].ID > 0 {
-						if fresh, err := m.store.GetNote(m.notes[m.index].ID); err == nil {
-							m.notes[m.index] = fresh
-						} else {
-							m.saveErr = err
-							m.flashMsg = "Load failed: " + err.Error()
-						}
-					}
-					m.buffer = stringToBuffer(m.notes[m.index].Content)
-					clampCursor()
-					m.virtualPhysCol = 0
-					*m.viewportTop = 0
-				}
-			case "ctrl+r":
-				if m.notes[m.index].ID > 0 {
-					// 1. Restore the note in the database
-					if err := m.store.RestoreCAS(m.notes[m.index].ID, m.notes[m.index].Revision); err != nil {
-						m.saveErr = err
-						m.flashMsg = "Restore failed: " + err.Error()
-						goto Finalize
-					}
-
-					// 2. Change state back to active notes so the user leaves the trash
-					m.state = stateTyping
-					m.index = 0
-					m = m.reload()
-
-					// 3. Instantly reset the timer in memory so the background loop doesn't fight us
-					m.notes[m.index].KillStart = time.Now()
-
-					// 4. Reset cursor positions
-					clampCursor()
-					m.virtualPhysCol = 0
-					*m.viewportTop = 0
-					m.saveErr = nil
-					m.flashMsg = "Note Restored!"
-				}
-			case "up":
-				if *m.viewportTop > 0 {
-					*m.viewportTop--
-				}
-			case "down":
-				*m.viewportTop++
+			if msg.String() == "up" || msg.String() == "down" || msg.String() == "pgup" || msg.String() == "pgdown" {
+				m.viewport, cmd = m.viewport.Update(msg)
+				cmds = append(cmds, cmd)
 			}
 			goto Finalize
 		}
@@ -953,99 +628,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+g":
-			m.notes[m.index].IsGhost = !m.notes[m.index].IsGhost
-			if m.notes[m.index].IsGhost && m.notes[m.index].ID > 0 {
-				if err := m.store.PurgeCAS(m.notes[m.index].ID, m.notes[m.index].Revision); err != nil {
-					m.notes[m.index].IsGhost = false
-					m.recordSaveError(err)
-					goto Finalize
-				}
-				m.notes[m.index].ID = 0
-			} else {
-				m.notes[m.index].Content = bufferToString(m.buffer)
-				if !m.saveCurrent() {
-					goto Finalize
-				}
-			}
-			return m, nil
-
-		case "esc", "ctrl+c":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-
-			if m.searchQuery != "" {
-				m.searchQuery = ""
-				m.searchInput.SetValue("")
-				m.index = 0
-				m = m.reload()
-				m.needsSave = false
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				clampCursor()
-				m.virtualPhysCol = 0
-				goto Finalize
-			}
-			return m, tea.Quit
-
-		case "f1":
-			if m.state == stateHelp {
-				m.state = m.prevState
-			} else {
-				m.notes[m.index].Content = bufferToString(m.buffer)
-				if !m.saveCurrent() {
-					goto Finalize
-				}
-
-				m.prevState = m.state
-				m.state = stateHelp
-
-				m.allNotes = m.store.List(false)
-
-				m.statActive = len(m.allNotes)
-				m.statTrash = len(m.store.List(true))
-
-				m.viewport.SetContent(m.generateHelpText())
-				m.viewport.GotoTop()
-			}
-			goto Finalize
-
 		case "f2":
 			m.showLineNums = !m.showLineNums
-			goto Finalize
-
-		case "ctrl+f":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			m.needsSave = false
-			m.stashNote()
-			m.prevState = m.state
-			m.state = stateSearch
-			m.searchInput.Focus()
-			m.searchInput.SetValue(m.searchQuery)
-			m.searchInput.CursorEnd()
-			m.searchResults = m.store.Search(m.searchInput.Value(), false)
-			m.searchIndex = 0
-			cmds = append(cmds, textinput.Blink)
-			goto Finalize
-
-		case "ctrl+u":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			if m.index > 0 {
-				m = m.reload()
-				m.index = 0
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				clampCursor()
-				m.virtualPhysCol = 0
-			}
-			m.flashMsg = "Note Promoted!"
-
 		case "ctrl+z", "alt+z":
 			if len(m.undoStack) > 0 {
 				m.redoStack = pushStack(m.redoStack, bufferToString(m.buffer), m.cursorRow, m.cursorCol)
@@ -1066,125 +650,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				clampCursor()
 			}
 
-		case "ctrl+t":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			m.state = stateTrash
-			m.index = 0
-			m.searchQuery = ""
-			m.searchInput.SetValue("")
-			m.undoStack, m.redoStack = nil, nil
-			m = m.reload()
-			m.buffer = stringToBuffer(m.notes[m.index].Content)
-			clampCursor()
-			m.virtualPhysCol = 0
-
-		case "ctrl+s":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			m.state = statePromptFile
-			m.fileInput.SetValue(extractTitle(m.notes[m.index].Content) + ".md")
-			m.fileInput.CursorEnd()
-			m.fileInput.Focus()
-			cmds = append(cmds, textinput.Blink)
-
-		case "ctrl+n":
-			m.notes[m.index].Content = bufferToString(m.buffer)
-			if !m.saveCurrent() {
-				goto Finalize
-			}
-			m.searchQuery = ""
-			m.searchInput.SetValue("")
-
-			newNote := Note{
-				ID:          0,
-				Content:     "",
-				UpdatedTime: time.Now(),
-				CreatedAt:   time.Now().Format("02 Jan 2006, 3:04 PM"),
-				CreatedTime: time.Now(),
-			}
-			m.allNotes = append([]Note{newNote}, m.allNotes...)
-
-			m.stashNote()
-			m.searchQuery = ""
-			m.searchInput.SetValue("")
-
-			m.notes = m.allNotes
-			m.index = 0
-			m.buffer = stringToBuffer("")
-			m.cursorRow, m.cursorCol = 0, 0
-			m.virtualPhysCol = 0
-			m.undoStack, m.redoStack = nil, nil
-
-		case "ctrl+d":
-			if len(m.notes) > 0 {
-				if strings.TrimSpace(bufferToString(m.buffer)) == "" {
-					if m.notes[m.index].ID > 0 {
-						if err := m.store.PurgeCAS(m.notes[m.index].ID, m.notes[m.index].Revision); err != nil {
-							m.recordSaveError(err)
-							goto Finalize
-						}
-					}
-				} else if !m.notes[m.index].IsGhost {
-					m.notes[m.index].Content = bufferToString(m.buffer)
-					if !m.saveCurrent() {
-						goto Finalize
-					}
-					if err := m.store.TrashCAS(m.notes[m.index].ID, m.notes[m.index].Revision); err != nil {
-						m.recordSaveError(err)
-						goto Finalize
-					}
-				}
-				delete(m.drafts, m.notes[m.index].ID)
-				m.index = 0
-				m.undoStack, m.redoStack = nil, nil
-				m = m.reload()
-				m.needsSave = false
-				m.buffer = stringToBuffer(m.notes[m.index].Content)
-				clampCursor()
-				m.virtualPhysCol = 0
-			}
-
 		case "alt+c":
 			copyToClipboard(bufferToString(m.buffer))
 			m.flashMsg = "Copied!"
-
 		case "alt+x":
 			m.state = statePipe
 			m.pipeInput.SetValue("")
 			m.pipeInput.Focus()
 			cmds = append(cmds, textinput.Blink)
-
-		case "alt+right":
-			if m.needsSave || m.saveErr != nil {
-				if !m.saveCurrent() {
-					goto Finalize
-				}
-			}
-			if m.index < len(m.notes)-1 {
-				m.stashNote()
-				m.index++
-				if !m.activateNote() {
-					m.index--
-				}
-			}
-		case "alt+left":
-			if m.needsSave || m.saveErr != nil {
-				if !m.saveCurrent() {
-					goto Finalize
-				}
-			}
-			if m.index > 0 {
-				m.stashNote()
-				m.index--
-				if !m.activateNote() {
-					m.index++
-				}
-			}
 		case "up", "down", "pgup", "pgdown":
 			gutterWidth := 0
 			if m.showLineNums {
@@ -1783,20 +1256,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 Finalize:
-	if m.highlightDirty {
-		m.highlightDirty = false
-		content := bufferToString(m.buffer)
-		m.cachedHighlight = content
-
-		cmds = append(cmds, func() tea.Msg {
-			hl := computeHighlight(content, m.theme)
-			return highlightMsg{
-				originalText:    content,
-				highlightedText: hl,
-			}
-		})
-	}
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -1906,6 +1365,9 @@ func (m model) View() string {
 	leftBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBarBlocks...)
 
 	timeStr := " " + formatRelativeTime(m.notes[m.index].UpdatedTime) + " "
+	if m.state != stateTrash {
+		timeStr = " " + m.saveStatus() + " "
+	}
 	if m.state == stateTrash {
 		if m.notes[m.index].DeletedTime.IsZero() {
 			timeStr = " Deleted: Unknown "
@@ -1949,7 +1411,11 @@ func (m model) View() string {
 
 		// 2. Build the Results List
 		var resultLines []string
-		if len(m.searchResults) == 0 {
+		if m.searchErr != nil {
+			resultLines = append(resultLines, "Search failed: "+m.searchErr.Error())
+		} else if m.searchPending {
+			resultLines = append(resultLines, "Searching…")
+		} else if len(m.searchResults) == 0 {
 			resultLines = append(resultLines, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("  No matches found..."))
 		} else {
 			// --- SCROLLING LOGIC START ---

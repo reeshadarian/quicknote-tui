@@ -19,7 +19,7 @@ go build -o /tmp/quicknote-v2-smoke .
 For the new store and migration tests:
 
 ```bash
-go test -count=1 -v -run 'TestQN009|TestQN010|TestQN011' .
+go test -count=1 -v -run 'TestQN009|TestQN010|TestQN011|TestQN012' .
 ```
 
 Use an isolated HOME for manual checks:
@@ -30,8 +30,17 @@ HOME="$tmp_home" /tmp/quicknote-v2-smoke -n "test note" -q
 HOME="$tmp_home" /tmp/quicknote-v2-smoke
 ```
 
-Do not run a development binary against real notes until the migration tests pass. The migration should create a pre-v2 backup of an existing v1 database. The v2 schema adds revision, expires_at, and is_pinned. CAS revision enforcement is implemented. Async I/O and TTL scheduling remain future tasks. QN-011 includes separate-connection and separate-process concurrency regressions and keyboard conflict recovery; see the living ledger for verification details.
+Do not run a development binary against real notes until the migration tests pass. The migration should create a pre-v2 backup of an existing v1 database. The v2 schema adds revision, expires_at, and is_pinned. CAS revision enforcement is implemented. Typed asynchronous TUI save/load/search/highlight I/O and stale-result protection are implemented; durable TTL scheduling remains a future task. QN-011 includes separate-connection and separate-process concurrency regressions and keyboard conflict recovery; see the living ledger for verification details.
 
 Provide test command output and git commit SHA in your next implementation session.
 
 Quicknote uses SQLite FTS5. The `go-sqlite3` driver requires `sqlite_fts5` at build time; use the same tag for all tests and release builds. On Fedora, ensure `gcc` is installed. Avoid `-tags libsqlite3` unless intentionally using a verified system SQLite with FTS5.
+
+QN-012 acceptance and existing cross-process CAS checks:
+
+```zsh
+CGO_ENABLED=1 go test -tags sqlite_fts5 -count=20 \
+  -run 'TestQN012(T02|T24)|TestQN011T17' .
+```
+
+Model tests explicitly run commands and deliver typed completions, including deliberately out-of-order responses. Ordinary editing and resize must stay responsive during a pending SQLite save. Opening/canceling search preserves the draft without initiating a save; selecting a result saves or reports a recoverable conflict. Exit waits for all outstanding saves.

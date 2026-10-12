@@ -1,9 +1,9 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: `595dd7da34d47852b511349e4750f11862c3d161`
+Latest implementation SHA: QN-012 publication recorded below
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-011 — implementation and acceptance verified; next QN-012
+Current task: QN-012 — implemented and acceptance verified; next QN-013
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
@@ -227,3 +227,47 @@ The requested task was already implemented in `595dd7da34d47852b511349e4750f1186
 **FAILED:** none. **NOT RUN this session:** human-operated Fedora/Zsh/Kitty/tmux tests, new PTY automation, remote CI and the platform matrix. Historical PTY evidence above remains historical.
 
 **Data and scope:** only temporary synthetic SQLite fixtures were used. Schema stays `user_version 2`; no production database, schema, retention, CLI flag or keymap changes. No QN-011 blocker found. Next READY task remains **QN-012**. Permanent deletion UX, compatibility adapters and trailing-newline investigation remain assigned follow-ups. `main` was read-only and remained `d3e5a119cdf12ec99fcc14a62545f60729adea54`.
+
+
+## QN-012 — Typed asynchronous commands and stale-result protection (2026-10-12 UTC)
+
+**DONE on `dev/v2`**, starting from `3d7c8659d92cea926840af77578dca4d85b771d3`. Implementation SHA is recorded in the publication follow-up. This task includes T-02 and T-24; it preserves the QN-011 storage CAS and T-17. No changes to `main`.
+
+### Changed files and behavior
+
+- `tui_async.go` (new): immutable typed save/load/search/highlight requests/results, monotonically increasing generations, per-note local versions, one in-flight save per note, and serialized completion handling. Workers capture store/snapshot values, never mutable model buffers or session maps. A matching save completion advances only its note's base revision; subsequent edits remain dirty and chain another CAS save. Duplicate/obsolete acknowledgments cannot consume newer requests. Inactive failures retain their own session/error/base revision and cannot change the active note's dirty/status state.
+- Loads retain the source draft until a successful matching response. Out-of-order generations, canceled opens and edits made during a load reject the response. A load cannot regress a session revision already acknowledged by a save. Search uses a 100 ms debounce, discards superseded debounces and out-of-order responses, clears stale selectable results while searching, and checks query/scope/generation. Enter opens the newest matching stable ID. Highlight results check note ID, local version, generation and text, including equal text across notes or after undo.
+- Existing save-dependent actions queue behind the newest draft while keys/resize continue. Trash/restore/purge/ghost-conversion and help reads also execute in commands; failed transitions keep identity/draft. An edit during a destructive write retains a recoverable local draft. Restore targets the restored ID and preserves the previous in-memory legacy timer reset; durable TTL/restore choices remain QN-028/032.
+- Conflict preview reads, copy writes and confirmed reloads are asynchronous. Escape invalidates a pending reload. A successful copy acknowledges recovery only for the copied version of the original retained session; future edits invalidate that acknowledgment. Exit waits for all outstanding saves, including inactive notes, and reopens failed retained sessions instead of silently quitting. Successfully recovered copies permit exit.
+- `tui.go`: routes I/O through the new dispatcher, makes note installation pure, adds session version/recovery state and visible Saving/Unsaved/Loading/Working/failed labels. Normal typing no longer calls SQLite. `tui_conflict.go`: keeps pure conflict rendering and non-I/O key handling, including pending-copy feedback.
+- `db.go`, `store.go`: checked list/search methods propagate query/scan/iteration errors to typed results instead of treating them as empty results. Legacy signatures remain available. CAS SQL, CLI flags, schema and retention are unchanged.
+- `tui_async_test.go`, `async_test_helpers_test.go` (new): 28 QN-012 tests plus a command-completion driver. Existing `cas_test.go`, `tui_baseline_test.go`, `tui_session_test.go` now deliver commands/results explicitly; identity/history/content/CAS assertions remain intact.
+
+**Intentional search behavior correction:** opening/canceling Ctrl+F preserves the dirty draft without saving solely because the overlay opened, as required by spec §6 N-04/§9.4. Selecting a result still resolves save/conflict before switching. The former QN-011 Ctrl+F-immediate-save case is replaced by explicit search-cancel-no-write and search-Enter-conflict-preservation tests. No key bindings changed.
+
+### Verification executed in this session
+
+Linux amd64, Go **1.25.9**, GCC/CGO available. The temporary `/tmp/go` toolchain disappeared across the resumed environment; Go was reinstalled at `/workspace/scratch/bf7235c166cf/go` before final checks. All databases/notes were synthetic temporary fixtures.
+
+**PASSED:**
+
+- Baseline at `3d7c865`: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 ./...`.
+- Final full suite: `CGO_ENABLED=1 /workspace/scratch/bf7235c166cf/go/bin/go test -tags sqlite_fts5 -count=1 ./...` (`ok quicknote 10.320s`).
+- Final race: `CGO_ENABLED=1 /workspace/scratch/bf7235c166cf/go/bin/go test -tags sqlite_fts5 -race -count=1 ./...` (`ok quicknote 12.676s`). Includes concurrently executing save/load/search/highlight workers while the editor processes edits/resize.
+- Repeated acceptance: `CGO_ENABLED=1 /workspace/scratch/bf7235c166cf/go/bin/go test -tags sqlite_fts5 -count=20 -run 'TestQN012(T02|T24)|TestQN011T17' .` (`ok quicknote 6.774s`). T-17 includes independent SQLite connections and independent child processes.
+- `CGO_ENABLED=1 /workspace/scratch/bf7235c166cf/go/bin/go vet -tags sqlite_fts5 ./...`.
+- `CGO_ENABLED=1 /workspace/scratch/bf7235c166cf/go/bin/go build -tags sqlite_fts5 -o /workspace/scratch/bf7235c166cf/quicknote-qn012 .`.
+- `git diff --check`; `gofmt -l` on all changed/new Go files produced no filenames.
+- Model regressions: T-02/T-24, immutable snapshots, duplicate save responses, newer-edit CAS chaining, 100 deterministic edit/save cycles, dirty session restoration, stale loads/highlights, closed DB/search errors, read-only trash identity, startup response rejection and typing before startup completes without persisting placeholder text, ghost no-save, pending reload cancellation, late copy results, copy acknowledgment invalidation, exit/inactive failures, restored legacy timers, and a real held SQLite writer lock with continued typing/resize. Existing migration/backup recovery and four-size conflict tests also ran in the full/race suites.
+- Final built-binary **scripted PTY** pass: hold an independent SQLite writer lock, type during the pending autosave, resize, release the lock and verify newest text; externally update the revision, trigger conflict via Ctrl+N, inspect both variants with I, resize through 120×40/80×24/50×12/25×5, save a copy with C, exit with Esc; both versions persisted and SQLite integrity was `ok`.
+- Final built-binary **Python/subprocess CLI** pass: quiet title creation, title append and recent append emitted empty stdout/stderr and exit 0; revision advanced to 3 and derived tags matched. Injected UPDATE trigger failure returned nonzero/diagnostic stderr/empty stdout and left content/revision unchanged; integrity was `ok`.
+
+**Initial failures corrected:** compile errors from API conversion, synchronous test expectations before command driving, dirty search selection initially bypassing its save gate, and a highlight test whose fixture still had an unconsumed dirty flag. Additional review found and covered exit while an inactive save is pending, copy recovery versus later edits, legacy timer reset after restore, and cancellation of pending transitions when search opens. No final failures remain.
+
+**NOT RUN:** human-operated Fedora/Zsh/Kitty/tmux checks, full platform/clipboard matrix, release benchmarks and remote CI verification. Scripted PTY checks are not claims of manual Fedora verification.
+
+### Compatibility, remaining risks and next task
+
+Schema stays **user_version 2**. No migration, retention changes, dependency upgrades, production database/backup operations, or `main` changes. CLI byte-normalization remains unchanged and assigned to QN-040. Shell filters/export/clipboard still have their legacy synchronous behavior; their dedicated tasks remain QN-039/041/036. Search grammar/escaping and fuzzy ranking remain QN-018–021. Async work can complete after cancellation; obsolete read/highlight results are discarded, while successful writes are reconciled or reported as saved copies. No latency/performance budget is claimed from these correctness checks.
+
+No QN-012 blocker remains. **QN-013 is next READY**: explicit EditorDraft/authoritative NoteID, bounded per-draft history and source maps; preserve the typed commands, session versions, CAS, and conflict recovery while replacing index-driven state. Required T-01–04 and T-17 must pass. ID-zero draft/ghost bookkeeping and broader newline/tab/grapheme layout work belong to that refactor and the assigned editor/lifecycle tasks. Permanent deletion confirmation from Trash remains QN-032.

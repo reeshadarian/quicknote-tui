@@ -1,64 +1,78 @@
 # Quicknote v2 — New Session Handoff
 
-**Repository:** https://github.com/reeshadarian/quicknote-tui
-**Working branch:** `dev/v2`
-**Protected branch:** `main` (do not change or merge without explicit approval)
-**Last maintainer-verified baseline:** 2026-10-11
-**QN-011 implementation commit:** `595dd7da34d47852b511349e4750f11862c3d161`
-**Latest development verification:** QN-011, 2026-10-12 UTC; full suite/race/vet/build and scripted PTY/CLI checks passed. See the living ledger for exact commits and evidence.
+Repository: https://github.com/reeshadarian/quicknote-tui
+Working branch: `dev/v2`
+Protected branch: `main` — do not modify or merge without explicit approval.
+Latest task: **QN-012 implemented and verified**, 2026-10-12 UTC.
+Implementation commit: recorded in the publication follow-up.
+Next task: **QN-013 — EditorDraft and authoritative NoteID**.
 
-## Start here: authoritative documents (all in this repository)
+## Authoritative documents
 
-1. [`AGENTS.md`](../AGENTS.md) — coding-agent instructions and safety rules.
-2. [`docs/QUICKNOTE_V2_SPEC.md`](QUICKNOTE_V2_SPEC.md) — the **complete 987-line specification**, task dependencies, architecture, T-01–T-35 acceptance scenarios, milestone definition, and design decisions.
-3. [`docs/IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) — the **living implementation ledger** with previous commit SHAs, remaining risks, and verification evidence. This supersedes the original planning template.
-4. [`docs/LOCAL_TESTING.md`](LOCAL_TESTING.md) — required Fedora/Go/SQLite FTS5 commands and isolated HOME testing.
-5. [`docs/QN-001-BASELINE.md`](QN-001-BASELINE.md) — original regression baseline and known historical bugs.
-6. [`docs/IMPLEMENTATION_PROGRESS_TEMPLATE.md`](IMPLEMENTATION_PROGRESS_TEMPLATE.md) — **historical initial 48-task ledger only**. Do not reset or replace the living progress file with it.
+Read these before changing code:
 
-**Important:** You do not need the previous ChatGPT conversation or ChatGPT Library: all the source-of-truth Markdown documents are checked into `dev/v2`. If any file is unavailable, inspect the live GitHub branch before drawing conclusions.
+1. `AGENTS.md` — working protocol and branch/data safety rules.
+2. `docs/QUICKNOTE_V2_SPEC.md` — full 987-line v1.0.0 specification; read the whole document, not only the task table.
+3. `docs/IMPLEMENTATION_PROGRESS.md` — living task/commit/test ledger, including historical limitations and the latest QN-012 evidence.
+4. `docs/LOCAL_TESTING.md` — Go/CGO/SQLite FTS5 commands and isolated test HOME.
+5. `docs/QN-001-BASELINE.md` — original regression baseline.
 
-## Verified current development state
+`docs/IMPLEMENTATION_PROGRESS_TEMPLATE.md` is the archived original planning ledger. Do not replace the living progress file with it. All project context is in this repository; no upload or prior conversation is needed.
 
-- QN-001 through QN-010 have been **implemented and committed** on `dev/v2`; their current regression tests passed locally after follow-up fixes. This does not establish that every legacy path has been migrated or every feature is complete.
-- Maintainer ran `go test -count=1 -v ./...` and `go test -race -count=1 ./...` with SQLite FTS5 enabled: **PASS** (2026-10-11; race test returned `ok quicknote 1.080s`).
-- Maintainer additionally confirmed manual note creation, autosave, search result identity, undo isolation, Trash and duplicate restoration, Unicode editing, wrap/resize, note switching, quiet capture, title/recent append, timed expiration, pipeline capture, and the V1 → V2 migration regression test.
-- One manual test uncovered **missing permanent deletion from Trash UI**. `SQLiteStore.Purge` exists, but Trash lacks a discoverable confirmation workflow; plan it in the appropriate UI/action milestone.
-- Trailing newline behavior during editing may require a targeted follow-up investigation.
-- Some transitional `NoteStore` adapters still suppress errors; address this during the appropriate refactor, not silently as unrelated work.
-- QN-011 is implemented and verified: content/tag/metadata writes use revision CAS; conflicting TUI drafts retain base revisions and offer keyboard copy/compare/confirmed reload. Separate connections and separate processes pass T-17. Schema stays v2. Durable expiration/pinning UX remains future work.
-- No new Go test runs are implied by uploading these documents. Always distinguish *previously reported pass* from *tests actually run in this session*.
+## Current development state
 
-## Next task: QN-012 — async commands with stale result protection
+QN-001–QN-010 are implemented, with maintainer-reported Go/race and manual Fedora checks. QN-011 implementation is `595dd7da34d47852b511349e4750f11862c3d161`; extra concurrency coverage is `7b41a3e1ce960be91455688df97ef234c577e2ec`. Their fixture tests also passed during QN-012.
 
-Read the full specification, especially §§3.2–3.4 and §14. QN-011's synchronous CAS is now the storage baseline; preserve it while moving I/O off the event loop.
+QN-012 now runs TUI save/load/search/highlight, metadata actions, conflict reads/copy/reload and help reads through typed Tea commands. Commands capture immutable snapshots/store values, not mutable model buffers or maps. SQL no longer runs on normal typing/navigation event paths. Shell filters, export and clipboard retain legacy behavior until their assigned tasks.
 
-- Introduce typed save/load/search/highlight messages and monotonically increasing request generations.
-- Capture immutable note ID, base revision and local-version snapshots for each job. Apply results only to the matching note/request; a save completing after another edit may update its base revision but must keep that newer draft dirty.
-- Keep the conflict recovery paths and original unsaved buffers. Never refresh a revision and overwrite automatically.
-- **T-02 and T-24 must pass**, alongside QN-011/T-17 and the existing suite.
-- Inspect `store.go`, `tui_conflict.go`, `tui.go`, and the new `cas_*test.go` regressions. Production DB opens use `_busy_timeout=5000&_txlock=immediate`.
-- Leave the broader index-to-Draft conversion for QN-013 and unrelated lifecycle/UI work for their assigned tasks.
+- Saves have note ID, base revision, local version and request ID; one write per note is in flight. Completions update the matching session's base revision, retain newer edits as dirty, and chain another CAS save. Duplicate/stale responses cannot acknowledge a newer request.
+- Loads keep the source draft until a successful matching response. Source ID/version and open generation reject late/canceled responses. An acknowledged session revision cannot be regressed by an older load.
+- Search debounces 100 ms, invalidates old selectable results and checks generation/query/trash scope. Search cancel preserves the original draft without initiating a save. Selecting a result still resolves dirty-save/conflict before opening its stable ID.
+- Highlights check note ID, local version, generation and text; equal text across notes or after undo cannot bypass identity/version guards.
+- Failed inactive saves remain attached to their own retained sessions. Exit waits for every outstanding save and reopens failed drafts for recovery. Copy recovery acknowledges only the copied original version; later edits invalidate that acknowledgment.
+- Restore targets the restored ID and preserves the prior in-memory legacy timer reset. Durable TTL and explicit expired-note restore choices remain future tasks.
 
-Conflict keyboard flow: `C` copy, `I` compare, arrows/PageUp/PageDown scroll, `R` twice reload/discard confirmation, `Esc` keep editing; Enter from the persistent error status retries/reopens recovery. A local conflicting draft can be saved as a separate note even when its remote note was trashed/purged. Saving remains synchronous until this next task.
+CAS SQL and schema remain unchanged: `user_version 2`, production `_busy_timeout=5000&_txlock=immediate`, revision guards for content/tags/metadata, and legacy v1 backup/migration/recovery fixtures. Never refresh a revision and automatically overwrite a conflicting draft.
 
-## Fedora / Zsh verification commands
+Conflict keys: **C** save copy, **I** compare, arrows/PageUp/PageDown scroll, **R twice** confirm reload/discard, **Esc** keep editing. Copy/reload are asynchronous; Escape cancels a pending reload. Enter from a persistent save-error status retries/reopens recovery. Remote trash/purge still allows copy recovery.
+
+## Verification and limits
+
+QN-012 full suite, race detector, vet, build and format checks passed with Go 1.25.9/CGO/`sqlite_fts5`. T-02/T-24 and separate-connection/process T-17 passed 20 repeated runs. Tests cover a held SQLite writer lock, concurrent workers alongside edits/resize, 100 deterministic edit/save cycles, stale/duplicate completions, draft/history restoration, failed reads/writes, copy/reload cancellation and safe exit.
+
+Built-binary scripted PTY checks passed for typing while a writer lock delayed autosave, preservation of newest edits, external conflict, compare/copy, four sizes (120×40, 80×24, 50×12, 25×5), and exit after recovery. Isolated CLI success/failed-write output/exit/rollback and SQLite integrity checks passed. Existing migration/backup recovery tests ran in the full/race suites.
+
+These are container/automated results. Human-operated Fedora/Zsh/Kitty/tmux, the full platform/clipboard matrix, release benchmarks and remote CI were not verified in the QN-012 session. Do not turn historical pass records into new-session claims.
+
+## QN-013 scope
+
+Read spec §§3.2–3.4 and §5, and the exact task/dependency/acceptance table in §14.
+
+Replace index-driven editor identity with an explicit EditorDraft/NoteID contract. Preserve per-draft undo/redo, dirty/error state, cursor, viewport, source maps, local versions and base revisions. Keep the QN-012 command protocol and CAS conflict recovery intact. Do not turn this into a new package/schema/keymap/UI rewrite.
+
+Inspect `tui_async.go`, `tui.go` (`noteSession`, stash/install), `tui_conflict.go`, `store.go`, `engine.go`, `tui_async_test.go`, `async_test_helpers_test.go` and `cas_*test.go`. Add focused regressions before refactoring. **T-01–04 and T-17 must pass**, alongside QN-012 T-02/T-24 and the full suite/race/vet/build gates.
+
+Remaining known follow-ups: ID-zero draft/ghost bookkeeping, editor trailing-newline/tab/grapheme layout consistency, legacy Store adapters, permanent-delete confirmation from Trash (QN-032), durable TTL (QN-028), safe ghost conversion (QN-031), parsed/fuzzy search (QN-018–021), asynchronous shell review (QN-039), and byte-preserving CLI (QN-040). Address only what the selected task actually requires.
+
+## Fedora / Zsh commands
 
 ```zsh
 git fetch origin
 git switch dev/v2
 git pull --ff-only origin dev/v2
 git status --short
+git log -5 --oneline
 go version
 export CGO_ENABLED=1
-export GOFLAGS="-tags=sqlite_fts5"
+export GOFLAGS='-tags=sqlite_fts5'
 go test -count=1 ./...
 go test -race -count=1 ./...
 go vet ./...
 go build -o /tmp/quicknote-test .
+go test -count=20 -run 'TestQN012(T02|T24)|TestQN011T17' .
 ```
 
-For manual testing (do not touch real notes):
+For manual checks, use synthetic data only:
 
 ```zsh
 export QN_TEST_HOME="$(mktemp -d)"
@@ -67,17 +81,8 @@ printf 'one\ntwo\n' | qntest -q
 qntest
 ```
 
-The application normally stores real user notes in `~/.local/share/quicknote-tui/notes.sqlite`. **Never run destructive test/migration operations against that file.** Existing FTS5 requires `sqlite_fts5`; without it SQLite will fail with `no such module: fts5`.
+Never test destructive operations/migrations against real `~/.local/share/quicknote-tui/notes.sqlite`. Existing database backups must use SQLite backup/`VACUUM INTO`, not a blind copy of a live WAL database.
 
-## Workflow for each coding session
+## Ready-to-paste next-session prompt
 
-1. Read all three governing files: `AGENTS.md`, `docs/QUICKNOTE_V2_SPEC.md`, and `docs/IMPLEMENTATION_PROGRESS.md`.
-2. Inspect actual current branch HEAD and source. The working tree always takes precedence over historical descriptions.
-3. Implement the named ready task, preferably adding regression tests before changing code.
-4. Run available verification; report any tool/runtime limitation without falsely claiming tests passed.
-5. Commit only to `dev/v2`; update the living ledger with task state, commit SHA, changed files, test evidence, blockers, and next task.
-6. Do not overwrite historical evidence or merge to `main` without user approval.
-
-## Ready-to-paste prompt for the next ChatGPT session
-
-> Continue development of https://github.com/reeshadarian/quicknote-tui on `dev/v2`. The repository now contains all self-contained project documents; do not ask for an upload or rely on prior chat context. Read `AGENTS.md`, the entire `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`. Inspect the current branch and recent commits, then implement **QN-012 typed asynchronous commands with stale-result protection** as specified, including T-02 and T-24. Preserve the verified QN-011 CAS and separate-process/connection T-17 regressions. Preserve unsaved drafts and CLI compatibility, commit changes to `dev/v2`, update the progress ledger, and report tested versus untested outcomes. Never modify `main` without my approval.
+> Continue Quicknote v2 at https://github.com/reeshadarian/quicknote-tui on `dev/v2`. Read `AGENTS.md`, the entire `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, `docs/SESSION_HANDOFF.md` and `docs/LOCAL_TESTING.md`; inspect actual branch HEAD and recent commits. Implement **QN-013 EditorDraft and authoritative NoteID** as specified, preserving the verified QN-011 CAS and QN-012 typed async/stale-result protocols. Run T-01–04, T-17, T-02/T-24 and the full Go/race/vet/build suite using CGO and `sqlite_fts5`. Preserve unsaved drafts, per-note history and CLI compatibility. Commit directly to `dev/v2`, update the living progress ledger and handoff with exact SHAs, tests, limitations and next READY task. Never modify or merge into `main` without permission; do not ask for documents already in the repository or claim unexecuted tests passed.

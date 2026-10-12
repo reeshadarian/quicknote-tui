@@ -32,7 +32,9 @@ type NoteStore interface {
 	Get(int) (string, error)
 	GetNote(int) (Note, error)
 	List(bool) []Note
+	ListChecked(bool) ([]Note, error)
 	Search(string, bool) []Note
+	SearchChecked(string, bool) ([]Note, error)
 	Save(Note) (Note, error)
 	SaveCopy(Note) (Note, error)
 	Trash(int) error
@@ -187,4 +189,9 @@ func (s *SQLiteStore) Purge(id int) error {
 		return e
 	}
 	return s.PurgeCAS(id, n.Revision)
+}
+
+func (s *SQLiteStore) ListChecked(trash bool) ([]Note, error) { return loadNotesChecked(s.db, trash) }
+func (s *SQLiteStore) SearchChecked(q string, trash bool) ([]Note, error) {
+	return searchNotesChecked(s.db, q, trash)
 }

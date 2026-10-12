@@ -20,8 +20,7 @@ func TestRegressionSearchSelectionMaintainsNoteIdentity(t *testing.T) {
 	m.state = stateSearch
 	m.prevState = stateTyping
 	m.searchResults = []Note{mustGetTestNote(t, db, second)}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(model)
+	got := updateTest(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if got.notes[got.index].ID != second {
 		t.Fatalf("active ID=%d, want selected search ID=%d", got.notes[got.index].ID, second)
 	}
@@ -73,8 +72,7 @@ func TestSearchSelectionResetsHistoryAndKeepsTrashReadOnly(t *testing.T) {
 	m.state = stateSearch
 	m.prevState = stateTrash
 	m.searchResults = []Note{{ID: second, Content: "second", MatchRow: 200, MatchCol: 300}}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(model)
+	got := updateTest(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if got.state != stateTrash {
 		t.Fatalf("trashed result entered editable state: %v", got.state)
 	}
@@ -101,8 +99,7 @@ func TestSearchSelectionSavesDirtyDraftBeforeSwitch(t *testing.T) {
 	m.state = stateSearch
 	m.prevState = stateTyping
 	m.searchResults = []Note{mustGetTestNote(t, db, second)}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(model)
+	got := updateTest(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if loadNoteContent(db, first) != "unsaved first" {
 		t.Fatal("dirty draft was lost")
 	}
