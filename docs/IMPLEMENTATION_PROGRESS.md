@@ -204,3 +204,26 @@ Schema remains **user_version 2**; no new migration or retention policy change. 
 No QN-011 blocker remains. Saving is still synchronous and can wait for the SQLite busy timeout; **QN-012 is next READY** (011 prerequisite satisfied): typed asynchronous save/load/search/highlight commands, note/request/local-version generations, stale-completion rejection, and T-02/T-24. QN-013 still owns the broader Draft/NoteID refactor. List/search compatibility reads still suppress some errors; permanent-delete confirmation from Trash is QN-032; ghost conversion safety is QN-031; editor trailing-newline behavior remains open. Pin/TTL APIs here provide CAS groundwork without exposing those later lifecycle features.
 
 **Publication:** direct Git HTTPS push had no credentials in this container. The connected GitHub API published the implementation with tree `8b1970c759b360d99bfc5464d841501cd9b6602c`, exactly matching the locally committed/tested implementation tree. The documentation follow-up records the published implementation SHA. Only `dev/v2` is advanced with an expected-head check; `main` remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.
+
+
+## QN-011 — Fresh branch audit and concurrent recovery coverage (2026-10-12 UTC)
+
+The requested task was already implemented in `595dd7da34d47852b511349e4750f11862c3d161`; this session began at `3340980c9e8b56f10d4b140abc2d218abd56df53`. Read all governing documents, including the complete specification, and reviewed the actual CAS storage, CLI, TUI recovery and regression code. QN-011 remains **DONE**. No production rewrite or QN-012 work was performed.
+
+**Changes:** `cas_test.go` adds simultaneous content-versus-pin/expiration/trash writes through two independent SQLite connections, asserting exactly one winner and one revision increment, winner content/tags/FTS, and no losing metadata update. A second test runs two recovery-copy saves concurrently, checking distinct IDs, revision 1, both draft payloads/tags recoverable, and the original unchanged. This commit also updates this living ledger; a subsequent documentation record supplies the published supplement SHA.
+
+**Verification executed here (Linux amd64, Go 1.25.9, CGO enabled):**
+
+- PASS baseline at `3340980`: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 ./...`.
+- PASS final full suite: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 ./...` (`ok quicknote 0.322s`).
+- PASS race: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -race -count=1 ./...` (`ok quicknote 2.535s`).
+- PASS repeated concurrency: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=20 -run 'TestQN011(T17|Simultaneous|ConcurrentRecovery)' .` (`ok quicknote 0.944s`).
+- PASS `CGO_ENABLED=1 /tmp/go/bin/go vet -tags sqlite_fts5 ./...`.
+- PASS `CGO_ENABLED=1 /tmp/go/bin/go build -tags sqlite_fts5 -o /tmp/quicknote-qn011-recheck .`.
+- PASS `git diff --check`; `/tmp/go/bin/gofmt -l cas_test.go` produced no filenames.
+- PASS isolated Python/subprocess built-binary CLI checks: quiet title creation, title append and recent append each returned exit 0 with empty stdout/stderr; revision advanced to 3 and all three tags persisted. An injected UPDATE trigger failure produced nonzero exit, empty stdout and diagnostic stderr, with unchanged content/revision; `PRAGMA integrity_check` returned `ok`.
+- Existing migration/backup recovery, separate-process T-17 and conflict model/layout tests executed as part of the full and race suites.
+
+**FAILED:** none. **NOT RUN this session:** human-operated Fedora/Zsh/Kitty/tmux tests, new PTY automation, remote CI and the platform matrix. Historical PTY evidence above remains historical.
+
+**Data and scope:** only temporary synthetic SQLite fixtures were used. Schema stays `user_version 2`; no production database, schema, retention, CLI flag or keymap changes. No QN-011 blocker found. Next READY task remains **QN-012**. Permanent deletion UX, compatibility adapters and trailing-newline investigation remain assigned follow-ups. `main` was read-only and remained `d3e5a119cdf12ec99fcc14a62545f60729adea54`.

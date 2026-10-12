@@ -581,3 +581,123 @@ func TestQN011EmptyConflictCopyIsPersisted(t *testing.T) {
 		t.Fatalf("empty copy not persisted: %+v %v", copy, err)
 	}
 }
+
+// Content saves and metadata writes contend on the same revision. Neither
+// may commit a stale snapshot, regardless of which connection wins the lock.
+func TestQN011SimultaneousContentAndMetadata(t *testing.T) {
+	for _, operation := range []string{"pin", "expiry", "trash"} {
+		t.Run(operation, func(t *testing.T) {
+			a, b := twoStores(t)
+			n, err := a.Save(Note{Content: "base #base"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft, err := b.GetNote(n.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft.Content = "edited #edited"
+			start := make(chan struct{})
+			contentResult, metadataResult := make(chan error, 1), make(chan error, 1)
+			go func() {
+				<-start
+				_, err := b.Save(draft)
+				contentResult <- err
+			}()
+			go func() {
+				<-start
+				var err error
+				switch operation {
+				case "pin":
+					err = a.SetPinnedCAS(n.ID, n.Revision, true)
+				case "expiry":
+					err = a.SetExpirationCAS(n.ID, n.Revision, sql.NullString{String: "2030-01-01T00:00:00Z", Valid: true})
+				case "trash":
+					err = a.TrashCAS(n.ID, n.Revision)
+				}
+				metadataResult <- err
+			}()
+			close(start)
+			contentErr, metadataErr := <-contentResult, <-metadataResult
+			if (contentErr == nil) == (metadataErr == nil) {
+				t.Fatalf("expected one winner: content=%v metadata=%v", contentErr, metadataErr)
+			}
+			if metadataErr != nil && !errors.Is(metadataErr, ErrConflict) {
+				t.Fatalf("unexpected metadata failure: %v", metadataErr)
+			}
+			if contentErr != nil && !errors.Is(contentErr, ErrConflict) && !(operation == "trash" && errors.Is(contentErr, ErrTrashed)) {
+				t.Fatalf("unexpected content failure: %v", contentErr)
+			}
+			current, err := a.GetNote(n.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Revision != n.Revision+1 {
+				t.Fatalf("expected exactly one revision advance: %d", current.Revision)
+			}
+			wantContent, wantTag := n.Content, "#base"
+			if contentErr == nil {
+				wantContent, wantTag = draft.Content, "#edited"
+			}
+			if current.Content != wantContent || len(current.Tags) != 1 || current.Tags[0] != wantTag {
+				t.Fatalf("winner content/tags lost: %+v", current)
+			}
+			if current.IsPinned != (operation == "pin" && metadataErr == nil) ||
+				current.ExpiresAt.Valid != (operation == "expiry" && metadataErr == nil) ||
+				(current.DeletedAt != "") != (operation == "trash" && metadataErr == nil) {
+				t.Fatalf("losing snapshot changed metadata: %+v", current)
+			}
+			var indexed string
+			if err := a.db.QueryRow("SELECT content FROM notes_fts WHERE rowid=?", n.ID).Scan(&indexed); err != nil || indexed != wantContent {
+				t.Fatalf("FTS differs from winner: %q %v", indexed, err)
+			}
+		})
+	}
+}
+
+func TestQN011ConcurrentRecoveryCopiesKeepBothDrafts(t *testing.T) {
+	a, b := twoStores(t)
+	n, err := a.Save(Note{Content: "original #original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		note Note
+		err  error
+	}
+	start, results := make(chan struct{}), make(chan result, 2)
+	for i, store := range []*SQLiteStore{a, b} {
+		draft := n
+		draft.Content = fmt.Sprintf("draft %d #copy%d", i, i)
+		go func() {
+			<-start
+			copy, err := store.SaveCopy(draft)
+			results <- result{copy, err}
+		}()
+	}
+	close(start)
+	ids := map[int]bool{n.ID: true}
+	contents := map[string]bool{}
+	for range 2 {
+		r := <-results
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if ids[r.note.ID] || r.note.Revision != 1 {
+			t.Fatalf("copy reused identity/revision: %+v", r.note)
+		}
+		ids[r.note.ID] = true
+		contents[r.note.Content] = true
+		stored, err := b.GetNote(r.note.ID)
+		if err != nil || stored.Content != r.note.Content || len(stored.Tags) != 1 {
+			t.Fatalf("copy not recoverable: %+v %v", stored, err)
+		}
+	}
+	if !contents["draft 0 #copy0"] || !contents["draft 1 #copy1"] {
+		t.Fatalf("lost recovery version: %v", contents)
+	}
+	original, err := a.GetNote(n.ID)
+	if err != nil || original.Content != n.Content || original.Revision != n.Revision {
+		t.Fatalf("copy changed original: %+v %v", original, err)
+	}
+}
