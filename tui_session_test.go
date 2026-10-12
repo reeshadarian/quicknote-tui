@@ -19,7 +19,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	m.needsSave = true
 	m.cursorRow = 0
 	m.cursorCol = 5
-	*m.viewportTop = 4
+	*m.viewportTop = 0 // One-line fixture has only one valid viewport position.
 	m.undoStack = []textState{{content: "alpha", row: 0, col: 3}}
 	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRight, Alt: true}) // navigation alt+right
 	if m.notes[m.index].ID != b {
@@ -45,7 +45,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	if m.cursorCol != 5 {
 		t.Fatalf("A cursor lost: %d", m.cursorCol)
 	}
-	if *m.viewportTop != 4 {
+	if *m.viewportTop != 0 {
 		t.Fatalf("A viewport lost: %d", *m.viewportTop)
 	}
 	if len(m.undoStack) != 1 || m.undoStack[0].content != "alpha" {

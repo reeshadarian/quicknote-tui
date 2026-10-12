@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +36,7 @@ type textState struct {
 }
 
 type model struct {
+	windowHeight int
 	EditorDraft
 	keymap             Keymap
 	keyboardGeneration uint64
@@ -245,7 +245,7 @@ func (m *model) generateHelpText() string {
 	if len(allTags) == 0 {
 		tagsDisplay = "No tags found yet!"
 	}
-	wrappedTags := lipgloss.NewStyle().Width(termWidth - 10).Render("Your Tags:\n" + tagsDisplay)
+	wrappedTags := lipgloss.NewStyle().Width(max(1, termWidth-10)).Render("Your Tags:\n" + tagsDisplay)
 
 	helpText := fmt.Sprintf("%s\n%s\n\n%s\n\n%s", docPropsText, cheatsheet, dbPropsText, wrappedTags)
 
@@ -280,8 +280,9 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 1
+		m.windowHeight = max(1, msg.Height)
+		m.viewport.Width = max(1, msg.Width)
+		m.viewport.Height = max(1, msg.Height-1)
 		return m, nil
 
 	case tea.MouseMsg:
@@ -303,64 +304,7 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 				*m.viewportTop += 4
 				m.freeScroll = true
 			} else if msg.Button == tea.MouseButtonLeft {
-				m.freeScroll = false
-				if msg.Y >= m.viewport.Height {
-					return m, nil
-				}
-
-				gutterWidth := 0
-				if m.showLineNums {
-					gutterWidth = 6
-				}
-				textWidth := m.viewport.Width - gutterWidth - 2
-				if textWidth <= 0 {
-					textWidth = 80
-				}
-
-				targetPhysLine := *m.viewportTop + msg.Y
-				visualX := msg.X - gutterWidth
-				if visualX < 0 {
-					visualX = 0
-				}
-
-				currentPhysLine := 0
-				found := false
-
-				for i, line := range m.buffer {
-					starts, lengths := getLineMap(line, textWidth)
-
-					if currentPhysLine+len(starts) > targetPhysLine {
-						m.cursorRow = i
-						segmentIdx := targetPhysLine - currentPhysLine
-
-						targetCol := starts[segmentIdx] + visualX
-						segmentEnd := starts[segmentIdx] + lengths[segmentIdx]
-
-						if targetCol > segmentEnd {
-							targetCol = segmentEnd
-						}
-						if targetCol > len(line) {
-							targetCol = len(line)
-						}
-
-						m.cursorCol = targetCol
-						m.virtualPhysCol = visualX
-						found = true
-						break
-					}
-					currentPhysLine += len(starts)
-				}
-
-				if !found && len(m.buffer) > 0 {
-					m.cursorRow = len(m.buffer) - 1
-					m.cursorCol = len(m.buffer[m.cursorRow])
-
-					starts, _ := getLineMap(m.buffer[m.cursorRow], textWidth)
-					physRow := len(starts) - 1
-					m.virtualPhysCol = m.cursorCol - starts[physRow]
-				}
-
-				clampCursor()
+				m.placeMouse(msg.X, msg.Y)
 			}
 		}
 		return m, nil
@@ -544,95 +488,16 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pipeInput.Focus()
 			cmds = append(cmds, textinput.Blink)
 		case "up", "down", "pgup", "pgdown":
-			gutterWidth := 0
-			if m.showLineNums {
-				gutterWidth = 6
+			delta := 1
+			switch msg.String() {
+			case "up":
+				delta = -1
+			case "pgup":
+				delta = -m.layout().EditorHeight
+			case "pgdown":
+				delta = m.layout().EditorHeight
 			}
-			textWidth := m.viewport.Width - gutterWidth - 2
-			if textWidth <= 0 {
-				textWidth = 80
-			}
-
-			starts, lengths := getLineMap(m.buffer[m.cursorRow], textWidth)
-
-			physRow := len(starts) - 1
-			for r := 0; r < len(starts); r++ {
-				if r < len(starts)-1 {
-					if m.cursorCol < starts[r+1] {
-						physRow = r
-						break
-					}
-				} else {
-					physRow = r
-				}
-			}
-
-			physCol := m.virtualPhysCol
-			if physCol < 0 {
-				physCol = 0
-			}
-
-			if msg.String() == "up" {
-				if physRow > 0 {
-					targetRow := physRow - 1
-					targetCol := physCol
-					if targetCol > lengths[targetRow] {
-						targetCol = lengths[targetRow]
-					}
-					m.cursorCol = starts[targetRow] + targetCol
-				} else if m.cursorRow > 0 {
-					m.cursorRow--
-					pStarts, pLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
-					targetRow := len(pStarts) - 1
-					targetCol := physCol
-					if targetCol > pLengths[targetRow] {
-						targetCol = pLengths[targetRow]
-					}
-					m.cursorCol = pStarts[targetRow] + targetCol
-				}
-			} else if msg.String() == "down" {
-				if physRow < len(starts)-1 {
-					targetRow := physRow + 1
-					targetCol := physCol
-					if targetCol > lengths[targetRow] {
-						targetCol = lengths[targetRow]
-					}
-					m.cursorCol = starts[targetRow] + targetCol
-				} else if m.cursorRow < len(m.buffer)-1 {
-					m.cursorRow++
-					nStarts, nLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
-					targetRow := 0
-					targetCol := physCol
-					if targetCol > nLengths[targetRow] {
-						targetCol = nLengths[targetRow]
-					}
-					m.cursorCol = nStarts[targetRow] + targetCol
-				}
-			} else if msg.String() == "pgup" {
-				m.cursorRow -= m.viewport.Height
-				clampCursor()
-
-				pStarts, pLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
-				targetRow := len(pStarts) - 1
-				targetCol := physCol
-				if targetCol > pLengths[targetRow] {
-					targetCol = pLengths[targetRow]
-				}
-				m.cursorCol = pStarts[targetRow] + targetCol
-			} else if msg.String() == "pgdown" {
-				m.cursorRow += m.viewport.Height
-				clampCursor()
-
-				nStarts, nLengths := getLineMap(m.buffer[m.cursorRow], textWidth)
-				targetRow := 0
-				targetCol := physCol
-				if targetCol > nLengths[targetRow] {
-					targetCol = nLengths[targetRow]
-				}
-				m.cursorCol = nStarts[targetRow] + targetCol
-			}
-			clampCursor()
-
+			m.moveVisual(delta)
 		case "left":
 			if m.cursorCol > 0 {
 				m.cursorCol = previousGraphemeBoundary(m.buffer[m.cursorRow], m.cursorCol)
@@ -1124,19 +989,7 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 				textWidth = 80
 			}
 
-			starts, _ := getLineMap(m.buffer[m.cursorRow], textWidth)
-			physRow := len(starts) - 1
-			for r := 0; r < len(starts); r++ {
-				if r < len(starts)-1 {
-					if m.cursorCol < starts[r+1] {
-						physRow = r
-						break
-					}
-				} else {
-					physRow = r
-				}
-			}
-			m.virtualPhysCol = m.cursorCol - starts[physRow]
+			_, m.virtualPhysCol = cursorInRows(m.editorRows(), m.cursorRow, m.cursorCol)
 		}
 	}
 
@@ -1145,437 +998,55 @@ Finalize:
 }
 
 func (m model) View() string {
-	if m.state == stateCommands {
-		return m.commandView()
-	}
 	if !m.draftReady && m.index >= 0 && m.index < len(m.notes) {
 		m.Note = cloneNote(m.notes[m.index])
 	}
-	if m.state == stateConflict {
-		return m.conflictView()
-	}
-	bgDark := lipgloss.Color(m.theme.BgDark)
-	bgMed := lipgloss.Color(m.theme.BgMed)
-	textLight := lipgloss.Color(m.theme.TextLight)
-	textDark := lipgloss.Color(m.theme.TextDark)
-
-	accentNormal := lipgloss.Color(m.theme.AccentNormal)
-	accentMath := lipgloss.Color(m.theme.AccentMath)
-	accentCode := lipgloss.Color(m.theme.AccentCode)
-	accentTrash := lipgloss.Color(m.theme.AccentTrash)
-
-	currentText := bufferToString(m.buffer)
-	words := len(strings.Fields(currentText))
-	chars := len(currentText)
-
-	modeStr := "NORMAL "
-	modeColor := accentNormal
-	val := strings.ToLower(strings.TrimSpace(currentText))
-	if strings.HasPrefix(val, "math:") {
-		modeStr = "MATH "
-		modeColor = accentMath
-	} else if strings.HasPrefix(val, "code:") {
-		modeStr = "CODE "
-		modeColor = accentCode
-	}
-
 	switch m.state {
-	case stateTrash:
-		modeStr = "TRASH "
-		modeColor = accentTrash
+	case stateCommands:
+		return m.commandView()
+	case stateConflict:
+		return m.conflictView()
 	case stateHelp:
-		modeStr = "HELP "
-		modeColor = accentNormal
+		return m.panel("Help", m.viewport.View(), "Esc Close · ↑↓ Scroll")
 	case stateSearch:
-		modeStr = "FIND "
-		modeColor = accentMath
-	}
-
-	modeBlock := lipgloss.NewStyle().Background(modeColor).Foreground(textDark).Bold(true).Padding(0, 1).Render(modeStr)
-
-	searchTag := ""
-	if m.searchQuery != "" {
-		searchTag = fmt.Sprintf(" [Find: %s] ", m.searchQuery)
-	}
-
-	var noteInfoStr string
-	if len(m.notes) == 1 && m.notes[0].ID == -1 {
-		noteInfoStr = fmt.Sprintf(" Note 0/0%s ", searchTag)
-	} else {
-		noteInfoStr = fmt.Sprintf(" Note %d/%d%s ", m.index+1, len(m.notes), searchTag)
-	}
-
-	if m.Note.IsGhost {
-		noteInfoStr = lipgloss.NewStyle().Background(lipgloss.Color(bgMed)).Foreground(textLight).Bold(true).Padding(0, 1).Render("󰊠")
-	}
-	if m.saveErr != nil {
-		noteInfoStr = " Save failed — Enter retry "
-		if errors.Is(m.saveErr, ErrConflict) || errors.Is(m.saveErr, ErrTrashed) || errors.Is(m.saveErr, ErrNotFound) {
-			noteInfoStr = " Conflict — Enter recovery "
-		}
-	} else if m.flashMsg != "" {
-		noteInfoStr = " ★ " + m.flashMsg + " "
-	}
-
-	noteBlock := lipgloss.NewStyle().Background(bgMed).Foreground(textLight).Padding(0, 1).Render(noteInfoStr)
-	statBlock := lipgloss.NewStyle().Background(bgDark).Foreground(textLight).Padding(0, 1).Render(fmt.Sprintf(" %dW %dC", words, chars))
-
-	headingBlock := ""
-	heading := getFirstHeading(currentText)
-	if heading != "Untitled" && heading != "" {
-		headingBlock = lipgloss.NewStyle().Background(bgDark).Foreground(textLight).Padding(0, 1).Render("│  " + heading)
-	}
-
-	killBlock := ""
-	if m.state != stateTrash && len(m.notes) > 0 && m.index >= 0 && m.index < len(m.notes) {
-		_, duration := getKillTimerInfo(currentText)
-		if duration != nil && !m.Note.KillStart.IsZero() {
-			remaining := m.Note.KillStart.Add(*duration).Sub(m.timerNow)
-			if remaining > 0 {
-				killBlock = lipgloss.NewStyle().
-					Background(bgDark).
-					Foreground(lipgloss.Color("#F38BA8")).
-					Bold(true).
-					Padding(0, 1).
-					Render(fmt.Sprintf("KILL: %s", formatKillTime(remaining)))
-			}
-		}
-	}
-
-	leftCap := lipgloss.NewStyle().Foreground(modeColor).Render("")
-	rightCap := lipgloss.NewStyle().Foreground(bgMed).Render("")
-
-	leftBarBlocks := []string{leftCap, modeBlock, noteBlock, statBlock}
-	if headingBlock != "" {
-		leftBarBlocks = append(leftBarBlocks, headingBlock)
-	}
-	if killBlock != "" {
-		leftBarBlocks = append(leftBarBlocks, killBlock)
-	}
-
-	leftBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBarBlocks...)
-
-	timeStr := " " + formatRelativeTime(m.Note.UpdatedTime) + " "
-	if m.state != stateTrash {
-		timeStr = " " + m.saveStatus() + " "
-	}
-	if m.state == stateTrash {
-		if m.Note.DeletedTime.IsZero() {
-			timeStr = " Deleted: Unknown "
-		} else {
-			timeStr = " Deleted: " + formatRelativeTime(m.Note.DeletedTime) + " "
-		}
-	}
-
-	saveBlock := lipgloss.NewStyle().Background(bgMed).Foreground(textLight).Padding(0, 1).Render(timeStr)
-	rightBar := lipgloss.JoinHorizontal(lipgloss.Top, saveBlock, rightCap)
-
-	termWidth := m.viewport.Width
-	if termWidth == 0 {
-		termWidth = 80
-	}
-
-	spacerWidth := termWidth - lipgloss.Width(leftBar) - lipgloss.Width(rightBar)
-	if spacerWidth < 0 {
-		spacerWidth = 0
-	}
-	spacerStyle := lipgloss.NewStyle().Background(bgDark).Render(strings.Repeat(" ", spacerWidth))
-
-	statusBar := lipgloss.JoinHorizontal(lipgloss.Top, leftBar, spacerStyle, rightBar)
-	statusBar = lipgloss.NewStyle().MaxWidth(termWidth).Render(statusBar)
-
-	if m.state == stateHelp {
-		return m.viewport.View()
-	}
-
-	if m.state == stateSearch {
-		// Define the accent color if it isn't already defined earlier in View()
-		accentNormal := lipgloss.Color(m.theme.AccentNormal)
-
-		// 1. Build the Search Input Box
-		inputBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentNormal).
-			Padding(0, 1).
-			Width(60).
-			Render(m.searchInput.View())
-
-		// 2. Build the Results List
-		var resultLines []string
+		title := "Find notes: " + m.searchInput.View()
+		body := "No matches"
 		if m.searchErr != nil {
-			resultLines = append(resultLines, "Search failed: "+m.searchErr.Error())
+			body = "Search failed: " + m.searchErr.Error()
 		} else if m.searchPending {
-			resultLines = append(resultLines, "Searching…")
-		} else if len(m.searchResults) == 0 {
-			resultLines = append(resultLines, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("  No matches found..."))
-		} else {
-			// --- SCROLLING LOGIC START ---
-			maxVisible := 10 // Maximum items to show inside the bordered box
-			start := 0
-
-			// Shift the window down if the cursor goes past the max limit
-			if m.searchIndex >= maxVisible {
-				start = m.searchIndex - maxVisible + 1
-			}
-
-			end := start + maxVisible
-			if end > len(m.searchResults) {
-				end = len(m.searchResults)
-			}
-			// --- SCROLLING LOGIC END ---
-
-			// Use a standard for-loop bounded by our scrolling window
-			for i := start; i < end; i++ {
-				res := m.searchResults[i]
-				cursor := "  "
-				style := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.TextLight))
-
+			body = "Searching…"
+		} else if len(m.searchResults) > 0 {
+			lines := []string{}
+			visible := max(1, m.viewport.Height-3)
+			start := max(0, m.searchIndex-visible+1)
+			for i := start; i < min(len(m.searchResults), start+visible); i++ {
+				prefix := "  "
 				if i == m.searchIndex {
-					cursor = "❯ "
-					style = style.Foreground(accentNormal).Bold(true)
+					prefix = "> "
 				}
-
-				// --- CLEAN UP THE SQLITE SEARCH TAGS ---
-				cleanPreview := strings.ReplaceAll(res.Preview, "<<M_START>>", "")
-				cleanPreview = strings.ReplaceAll(cleanPreview, "<<M_END>>", "")
-
-				// Use cleanPreview instead of res.Preview
-				resultLines = append(resultLines, style.Render(fmt.Sprintf("%s%s", cursor, cleanPreview)))
+				preview := strings.ReplaceAll(strings.ReplaceAll(m.searchResults[i].Preview, "<<M_START>>", ""), "<<M_END>>", "")
+				lines = append(lines, prefix+preview)
 			}
+			body = strings.Join(lines, "\n")
 		}
-
-		resultsBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.BgMed)).
-			Padding(0, 1).
-			Width(60).
-			Render(strings.Join(resultLines, "\n"))
-
-		// 3. Stack them and center on screen
-		modal := lipgloss.JoinVertical(lipgloss.Left, inputBox, resultsBox)
-		centeredBox := lipgloss.Place(termWidth, m.viewport.Height, lipgloss.Center, lipgloss.Center, modal)
-
-		return lipgloss.JoinVertical(lipgloss.Left, centeredBox, statusBar)
+		return m.panel(title, body, "Esc Cancel · ↑↓ Choose · Enter Open")
+	case statePromptFile:
+		return m.panel("Export note", m.fileInput.View(), "Esc Cancel · Enter Write")
+	case statePipe:
+		return m.panel("Filter through local command", m.pipeInput.View(), "Esc Cancel · Enter Run")
 	}
-
-	if m.state == statePromptFile {
-		p := lipgloss.NewStyle().Foreground(accentNormal).Bold(true).Render("Save Note to File") + "\n\n" + m.fileInput.View()
-		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accentNormal).Padding(1, 3).Render(p)
-		centeredBox := lipgloss.Place(termWidth, m.viewport.Height, lipgloss.Center, lipgloss.Center, box)
-		return lipgloss.JoinVertical(lipgloss.Left, centeredBox, statusBar)
+	l := m.layout()
+	editor := m.renderLayoutEditor()
+	if l.Height <= 1 {
+		return clipFrame(editor, l.Width, 1)
 	}
-
-	if m.state == statePipe {
-		p := lipgloss.NewStyle().Foreground(accentNormal).Bold(true).Render("Filter Note through Shell Command") + "\n\n" + m.pipeInput.View()
-		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accentNormal).Padding(1, 3).Render(p)
-		centeredBox := lipgloss.Place(termWidth, m.viewport.Height, lipgloss.Center, lipgloss.Center, box)
-		return lipgloss.JoinVertical(lipgloss.Left, centeredBox, statusBar)
+	status := fmt.Sprintf("[%s] Ln %d Col %d · Ctrl+K Commands", m.saveStatus(), m.cursorRow+1, m.cursorCol+1)
+	if m.state == stateTrash {
+		status = "Trash · Ctrl+R Restore · Esc Back"
 	}
-
-	if m.state == stateSearch {
-		inputBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.AccentNormal)).
-			Padding(0, 1).
-			Width(60).
-			Render(m.searchInput.View())
-
-		// 2. Build the Results List
-		var resultLines []string
-		if len(m.searchResults) == 0 {
-			resultLines = append(resultLines, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("  No matches found..."))
-		} else {
-			for i, res := range m.searchResults {
-				cursor := "  "
-				baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.TextLight))
-
-				if i == m.searchIndex {
-					cursor = "❯ "
-					baseStyle = baseStyle.Foreground(accentNormal).Bold(true)
-				}
-
-				// Highlight style: Dark text on Accent-colored background
-				hlStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.BgDark)).Background(accentNormal).Bold(true)
-
-				// Parse the <<M_START>> and <<M_END>> tags dynamically
-				parts := strings.Split(res.Preview, "<<M_START>>")
-				formattedPreview := baseStyle.Render(parts[0])
-
-				for p := 1; p < len(parts); p++ {
-					subParts := strings.SplitN(parts[p], "<<M_END>>", 2)
-					if len(subParts) == 2 {
-						// Apply Highlight style to matched text, then revert to baseStyle
-						formattedPreview += hlStyle.Render(subParts[0]) + baseStyle.Render(subParts[1])
-					} else {
-						formattedPreview += baseStyle.Render(parts[p])
-					}
-				}
-
-				resultLines = append(resultLines, baseStyle.Render(cursor)+formattedPreview)
-			}
-		}
-
-		resultsBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.BgMed)).
-			Padding(0, 1).
-			Width(60).
-			Render(strings.Join(resultLines, "\n"))
-
-		modal := lipgloss.JoinVertical(lipgloss.Left, inputBox, resultsBox)
-
-		// This overlays the modal in the center of your existing UI
-		return lipgloss.Place(
-			m.viewport.Width, m.viewport.Height,
-			lipgloss.Center, lipgloss.Center,
-			modal,
-			lipgloss.WithWhitespaceChars(" "),
-		)
+	if m.flashMsg != "" {
+		status = m.flashMsg + " · " + m.saveStatus()
 	}
-
-	return fmt.Sprintf("%s\n%s", m.renderEditorView(), statusBar)
+	return clipFrame(editor+"\n"+status, l.Width, l.Height)
 }
-
-func (m model) renderEditorView() string {
-	highlighted := m.cachedHighlight
-
-	charUnderCursor := " "
-	if m.cursorCol < len(m.buffer[m.cursorRow]) {
-		charUnderCursor = string(m.buffer[m.cursorRow][m.cursorCol])
-	}
-
-	cursorStyle := lipgloss.NewStyle().Reverse(true)
-	visibleCursor := cursorStyle.Render(charUnderCursor)
-
-	logicalLinesHl := strings.Split(highlighted, "\n")
-
-	if len(logicalLinesHl) > len(m.buffer) {
-		logicalLinesHl = logicalLinesHl[:len(m.buffer)]
-	} else if len(logicalLinesHl) < len(m.buffer) {
-		for len(logicalLinesHl) < len(m.buffer) {
-			logicalLinesHl = append(logicalLinesHl, "")
-		}
-	}
-
-	var physicalLines []string
-
-	cursorPhysicalRow := 0
-	physicalLineIdx := 0
-
-	gutterWidth := 0
-	if m.showLineNums {
-		gutterWidth = 6
-	}
-	textWidth := m.viewport.Width - gutterWidth - 2
-	if textWidth <= 0 {
-		textWidth = 80
-	}
-
-	for i, logicalLineHl := range logicalLinesHl {
-		starts, lengths := getLineMap(m.buffer[i], textWidth)
-		isCursorLine := (i == m.cursorRow)
-
-		var physSegments []string
-		rawLine := string(m.buffer[i])
-
-		if strings.TrimSpace(rawLine) == "---" && !isCursorLine {
-			availableWidth := m.viewport.Width
-			if m.showLineNums {
-				availableWidth -= 6
-			}
-			if availableWidth < 1 {
-				availableWidth = 1
-			}
-
-			// Draw an edge-to-edge line using box-drawing characters
-			hr := strings.Repeat("─", availableWidth)
-			styledHr := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render(hr)
-
-			physSegments = []string{styledHr}
-		} else {
-			// Normal text rendering
-			physSegments = buildPhysicalLines(logicalLineHl, m.cursorCol, isCursorLine, starts, lengths, visibleCursor)
-		}
-
-		physSegments = carryANSI(physSegments)
-
-		for j, pLine := range physSegments {
-			if m.showLineNums {
-				if j == 0 {
-					numStr := fmt.Sprintf("%3d │ ", i+1)
-					gutter := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render(numStr)
-					physicalLines = append(physicalLines, gutter+pLine)
-				} else {
-					emptyGutter := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("    │ ")
-					physicalLines = append(physicalLines, emptyGutter+pLine)
-				}
-			} else {
-				physicalLines = append(physicalLines, pLine)
-			}
-		}
-
-		if isCursorLine {
-			for p, start := range starts {
-				if p < len(starts)-1 {
-					if m.cursorCol >= start && m.cursorCol < starts[p+1] {
-						cursorPhysicalRow = physicalLineIdx + p
-						break
-					}
-				} else {
-					cursorPhysicalRow = physicalLineIdx + p
-				}
-			}
-		}
-
-		physicalLineIdx += len(physSegments)
-	}
-
-	top := 0
-	if m.viewportTop != nil {
-		top = *m.viewportTop
-	}
-	if !m.freeScroll {
-		if cursorPhysicalRow < top {
-			top = cursorPhysicalRow
-		} else if cursorPhysicalRow >= top+m.viewport.Height {
-			top = cursorPhysicalRow - m.viewport.Height + 1
-		}
-	}
-
-	maxTop := len(physicalLines) - m.viewport.Height
-	if maxTop < 0 {
-		maxTop = 0
-	}
-	if top > maxTop {
-		top = maxTop
-	}
-	if top < 0 {
-		top = 0
-	}
-
-	startRow := top
-	if startRow < 0 {
-		startRow = 0
-	}
-
-	endRow := startRow + m.viewport.Height
-	if endRow > len(physicalLines) {
-		endRow = len(physicalLines)
-	}
-	if startRow > endRow {
-		startRow = endRow
-	}
-
-	visibleLines := physicalLines[startRow:endRow]
-
-	for len(visibleLines) < m.viewport.Height {
-		if m.showLineNums {
-			emptyGutter := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Comment)).Render("    │ ")
-			visibleLines = append(visibleLines, emptyGutter)
-		} else {
-			visibleLines = append(visibleLines, "")
-		}
-	}
-
-	return strings.Join(visibleLines, "\n")
-}
+func (m model) renderEditorView() string { return m.renderLayoutEditor() }

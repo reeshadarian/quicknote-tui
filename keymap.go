@@ -201,7 +201,7 @@ func (m *model) openCommands() {
 func (m model) commandView() string {
 	actions := m.commandActions()
 	var lines []string
-	lines = append(lines, "Commands · "+m.keyboard().Profile, "↑↓ Choose · Enter Run · Esc Cancel")
+	lines = append(lines, "Commands · "+m.keyboard().Profile, "Esc Cancel · ↑↓ Choose · Enter Run")
 	height := max(1, m.viewport.Height)
 	visible := max(1, height-2)
 	start := max(0, m.commandIndex-visible+1)
@@ -218,5 +218,5 @@ func (m model) commandView() string {
 		}
 		lines = append(lines, line)
 	}
-	return strings.Join(lines, "\n")
+	return m.panel(lines[0], strings.Join(lines[2:], "\n"), lines[1])
 }

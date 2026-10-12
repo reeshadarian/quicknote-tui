@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-015 — DONE; next QN-016
+Current task: QN-016 — DONE; next QN-017
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
@@ -298,6 +298,13 @@ PASS full suite/race/vet/build and diff/format checks with the same CGO/sqlite_f
 
 ## QN-015 — Versioned configurable keymap (2026-10-12)
 
-**DONE**, commit QN015_SHA_PENDING. `keymap.go`/`keymap_test.go` add validated version-1 keyboard.json, default/legacy profiles, atomic configuration persistence and safe visible fallback. Default Ctrl+K opens a basic registry Commands menu; Alt+K deletes a line. Legacy retains Ctrl+K delete-line and offers Alt+P Commands. Custom action-ID bindings replace old bindings and reject unknown/invalid values, typing-character capture and modal/global collisions. Both generated help and menu use actual configured bindings. First launch shows a nonblocking migration notice; a Commands action toggles and persists profiles. A full fuzzy palette remains QN-023. `docs/KEYBOARD.md` documents configuration, aliases and terminal/tmux limitations.
+**DONE**, commit e64bebb6c09292c58b0dae6417bfdb22f7b431b6. `keymap.go`/`keymap_test.go` add validated version-1 keyboard.json, default/legacy profiles, atomic configuration persistence and safe visible fallback. Default Ctrl+K opens a basic registry Commands menu; Alt+K deletes a line. Legacy retains Ctrl+K delete-line and offers Alt+P Commands. Custom action-ID bindings replace old bindings and reject unknown/invalid values, typing-character capture and modal/global collisions. Both generated help and menu use actual configured bindings. First launch shows a nonblocking migration notice; a Commands action toggles and persists profiles. A full fuzzy palette remains QN-023. `docs/KEYBOARD.md` documents configuration, aliases and terminal/tmux limitations.
 
 PASS full suite/race/vet/build/diff checks with Go 1.25.9, CGO, sqlite_fts5; commands match QN-013. T-16 regressions cover default/legacy Ctrl+K, Alt+K, generated help, remapping, collision rejection, migration notice, malformed config fallback, persistence, and keyboard-only menu dispatch/cancel. Existing QN-011–014 tests pass. Schema stays 2, synthetic fixtures only, main unchanged. Manual Fedora/tmux key interception NOT RUN. Next READY QN-016 (013 dependency satisfied).
+
+
+## QN-016 — Shared responsive Unicode/cell layout (2026-10-12)
+
+**DONE**, commit QN016_SHA_PENDING. `layout.go`/`layout_test.go` provide one immutable grapheme/cell/source-row layout for wrapping, cursor placement, vertical movement and mouse hit testing. Tabs display at four-cell stops without changing bytes; combining/ZWJ clusters are never split; over-wide clusters have a one-cell display fallback. Render only viewport rows from the physical source layout, retain ANSI syntax styling when it matches source coordinates, neutralize user controls and preserve raw text. Shared panels reserve cancel/choice footers and fit tiny terminals. Editor/status and help/search/export/pipe/conflict/Commands all use bounded dimensions; rendering never mutates viewport or draft.
+
+PASS full suite (10.497s), race (13.422s), vet/build/diff/format, using prior CGO/sqlite_fts5 commands. T-25 covers every overlay at 120×40, 80×24, 50×12, 25×5 and 1×1/2×2. New tests cover wide-cell mouse positions, combining/ZWJ boundaries, preferred visual columns, exact source coverage/whitespace, safe control display and valid viewport restoration. `go test -tags sqlite_fts5 -run '^$' -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s .` PASSED (27,887 executions). Earlier tiny-menu footer, unset-size error visibility and invalid one-line viewport fixtures failed and were corrected: the old synthetic top=4 on a one-line note is now valid top=0, with a separate multi-line top=4 navigation regression preserving meaningful coverage. Textual snapshot: header/selected body/cancel footer on compact panels; 25×5 keeps Esc and conflict Copy/Reload labels visible. Main/schema unchanged; no production data. Manual Fedora/PTY integration is performed after QN-017. Next READY QN-017.

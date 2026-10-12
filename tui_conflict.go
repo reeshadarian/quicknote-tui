@@ -4,9 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 func (m *model) recordSaveError(err error) {
@@ -82,35 +79,18 @@ func (m model) conflictBody() string {
 }
 
 func (m model) conflictView() string {
-	width := m.viewport.Width
-	if width < 1 {
-		width = 80
-	}
-	height := m.viewport.Height
-	if height < 1 {
-		height = 20
-	}
-	header := "Conflict: draft kept\nC Copy | R Reload\nI Compare | Esc Edit"
+	title := "Conflict: draft kept"
+	footer := "C Copy | R Reload\nI Compare | Esc Edit"
 	if m.copyPending {
-		header = "Saving copy…\nEsc Keep editing"
+		title = "Saving copy…"
+		footer = "Esc Keep editing"
 	}
 	if m.confirmReload {
-		header = "Discard local draft?\nR Confirm | Esc Cancel"
+		title = "Discard local draft?"
+		footer = "R Confirm | Esc Cancel"
 	}
-	style := lipgloss.NewStyle().Width(width).MaxWidth(width)
-	header = style.Render(header)
-	available := max(0, height-lipgloss.Height(header))
-	// Escape controls in the preview only. Stored and copied bytes stay intact.
-	body := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
-			return r
-		}
-		return '�'
-	}, stripANSI(m.conflictBody()))
-	lines := strings.Split(style.Render(body), "\n")
-	top := min(m.conflictTop, max(0, len(lines)-available))
-	if available > 0 {
-		header += "\n" + strings.Join(lines[top:min(len(lines), top+available)], "\n")
-	}
-	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(header)
+	body := safeText(stripANSI(m.conflictBody()))
+	lines := wrapDisplay(body, m.layout().Width)
+	top := min(m.conflictTop, max(0, len(lines)-max(1, m.viewport.Height-3)))
+	return m.panel(title, strings.Join(lines[top:], "\n"), footer)
 }

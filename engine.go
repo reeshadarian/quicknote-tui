@@ -17,7 +17,6 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 )
 
 // --- CONFIGURATION ---
@@ -270,64 +269,11 @@ func applySearchHighlight(highlighted string, indices []int, theme Theme) string
 }
 
 func getLineMap(runes []rune, width int) ([]int, []int) {
-	if width <= 0 {
-		width = 80
-	}
-	if len(runes) == 0 {
-		return []int{0}, []int{0}
-	}
-
-	var starts []int
-	var lengths []int
-	start := 0
-
-	for start < len(runes) {
-		currentWidth := 0
-		end := start
-		lastSpace := -1
-		breakPoint := -1
-
-		for end < len(runes) {
-			rw := runewidth.RuneWidth(runes[end])
-
-			if currentWidth == 0 && rw > width {
-				end++
-				break
-			}
-			if currentWidth+rw > width {
-				break
-			}
-
-			switch runes[end] {
-			case ' ':
-				lastSpace = end
-			case ',', '.', ';', ':', '-':
-				breakPoint = end + 1
-			}
-
-			currentWidth += rw
-			end++
-		}
-
-		if end == len(runes) {
-			starts = append(starts, start)
-			lengths = append(lengths, end-start)
-			break
-		}
-
-		if lastSpace != -1 && lastSpace >= start {
-			starts = append(starts, start)
-			lengths = append(lengths, lastSpace-start)
-			start = lastSpace + 1
-		} else if breakPoint != -1 && breakPoint > start {
-			starts = append(starts, start)
-			lengths = append(lengths, breakPoint-start)
-			start = breakPoint
-		} else {
-			starts = append(starts, start)
-			lengths = append(lengths, end-start)
-			start = end
-		}
+	rows := lineRows(runes, max(1, width))
+	starts, lengths := []int{}, []int{}
+	for _, row := range rows {
+		starts = append(starts, row.Start)
+		lengths = append(lengths, row.End-row.Start)
 	}
 	return starts, lengths
 }

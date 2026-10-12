@@ -497,6 +497,7 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.bindDraft()
+	m.clampDraftCursor()
 	explicit := false
 	if intent, ok := msg.(ActionMsg); ok {
 		a, found := findAction(intent.ID)
@@ -589,6 +590,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, m.requestHighlight())
 	}
 	m.clampDraftCursor()
+	m.updateEditorScroll()
 	m.syncSummary()
 	return m, cmd
 }
