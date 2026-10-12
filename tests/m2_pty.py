@@ -24,7 +24,7 @@ import termios
 import time
 import unicodedata
 
-from m2_cli import Home, CheckFailure, MissingFeature, arguments, check, run_suite, utcstamp
+from m2_cli import Home, CheckFailure, MissingFeature, arguments, check, parse_instant, run_suite, utcstamp
 
 
 ESC, ENTER, TAB, DOWN = b"\x1b", b"\r", b"\t", b"\x1b[B"
@@ -279,6 +279,25 @@ class Terminal:
         self.select(pattern, label)
         self.key(ENTER)
 
+    def ensure_editor(self):
+        # Identify context by registry action availability, not note body/footer
+        # text containing "Trash". Escape closes only the Commands layer.
+        self.key(b"\x1bp" if self.profile == "legacy" else b"\x0b")
+        self.wait(lambda: "Commands" in self.screen.text, "context Commands menu")
+        previous = None
+        for _ in range(90):
+            selected = self.selected()
+            if re.match(r"Return to notes", selected, re.I):
+                self.key(ENTER)
+                return
+            if re.match(r"Move to Trash", selected, re.I):
+                self.key(ESC)
+                return
+            check(not selected or selected != previous, "registry did not expose an editor/Trash return action")
+            previous = selected
+            self.key(DOWN)
+        raise CheckFailure("could not identify editor/Trash registry context")
+
     def cancel_default(self):
         self.wait(lambda: "Cancel" in self.screen.text, "default-Cancel confirmation")
         check(bool(re.search(r">\s*Cancel", self.screen.text)), "confirmation did not select Cancel by default")
@@ -360,6 +379,79 @@ def locked_save(home):
     home.healthy()
 
 
+def clipboard_isolation(home):
+    # Exercise every shim directly, then verify that product Copy uses the shim
+    # selected by its backend lookup. No payload bytes are recorded on disk.
+    payload = b"synthetic clipboard probe"
+    check(not home.clipboard_records(), "clipboard audit was not initially empty")
+    check(all(name not in home.env for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS")),
+          "real desktop clipboard endpoints remain in child environment")
+    for writer in ("pbcopy", "wl-copy", "xclip", "xsel"):
+        result = subprocess.run([writer], input=payload, capture_output=True,
+                                env=home.env, cwd=home.path, timeout=3)
+        check(result.returncode == 0 and not result.stdout and not result.stderr,
+              "clipboard writer shim failed")
+    check(home.clipboard_matches(payload, expected_calls=4), "clipboard shim audit missed calls/bytes")
+    home.clipboard_audit.unlink()
+    home.seed(payload.decode())
+    with Terminal(home) as terminal:
+        terminal.action(r"^Copy note", "Copy note")
+        terminal.wait(lambda: home.clipboard_matches(payload), "one exact synthetic clipboard write")
+        terminal.finish()
+    check(home.clipboard_matches(payload), "Copy issued extra calls or unexpected bytes")
+
+
+def displayed_deadline(text):
+    """Parse the confirmation's absolute local time, never the editor countdown."""
+    for match in re.finditer(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)([^\n]{0,60})", text):
+        date, clock, tail = match.groups()
+        offset = re.search(r"([+-]\d{2}:?\d{2}|\bZ\b)", tail)
+        zone = offset.group(1) if offset else ("+00:00" if "UTC" in tail else
+                                              "-07:00" if "PDT" in tail else
+                                              "-08:00" if "PST" in tail else None)
+        if zone is not None:
+            instant = parse_instant(date + "T" + clock + zone)
+            # A minute-resolution display names a minute rather than its precise
+            # second; stored deadline bounds below still require the full 900s.
+            precision = 60 if clock.count(":") == 1 else 1
+            return instant, precision
+    raise CheckFailure("TTL confirmation lacks a parseable absolute local instant/offset")
+
+
+def assert_preset(before, after, start, end, displayed, precision):
+    check(after["id"] == before["id"] and after["content"] == before["content"],
+          "TTL picker changed note identity/content")
+    check(after["revision"] == before["revision"] + 1,
+          "TTL picker did not advance exactly one CAS revision")
+    check(after["expiration_source"] == "preset", "TTL picker did not record preset ownership")
+    check(after["is_pinned"] == before["is_pinned"] and after["deleted_at"] == before["deleted_at"],
+          "TTL picker changed unrelated lifecycle state")
+    stored = parse_instant(after["expires_at"])
+    check(start + dt.timedelta(seconds=900) <= stored <= end + dt.timedelta(seconds=900, milliseconds=1),
+          "15-minute picker deadline is not 900 seconds after confirmation")
+    check(-1 <= (stored - displayed).total_seconds() <= precision + 1,
+          "stored deadline does not agree with displayed absolute local instant")
+
+
+def preset_assertions(_home):
+    start = dt.datetime(2026, 10, 12, 19, tzinfo=dt.timezone.utc)
+    end = start + dt.timedelta(milliseconds=200)
+    before = {"id": 7, "content": "synthetic preset", "revision": 4,
+              "is_pinned": 0, "deleted_at": None}
+    after = dict(before, revision=5, expiration_source="preset",
+                 expires_at=utcstamp(start + dt.timedelta(seconds=900, milliseconds=100)))
+    shown, precision = displayed_deadline("2026-10-12 12:15:00 PDT (-07:00)")
+    assert_preset(before, after, start, end, shown, precision)
+    for mutation in ({"expires_at": utcstamp(start + dt.timedelta(hours=1))},
+                     {"revision": 4}, {"expiration_source": "directive"},
+                     {"content": "wrong"}, {"id": 8}):
+        try:
+            assert_preset(before, dict(after, **mutation), start, end, shown, precision)
+        except CheckFailure:
+            continue
+        raise CheckFailure("preset assertion accepted wrong deadline/ownership/revision/identity/content")
+
+
 def expiration_picker(home):
     note_id = home.seed("synthetic picker")
     home.schema3()
@@ -377,13 +469,26 @@ def expiration_picker(home):
         terminal.action(r"^Set expiration", "Set expiration")
         terminal.select(r"15 minutes", "15-minute preset")
         terminal.key(ENTER)
+        terminal.wait(lambda: "Cancel" in terminal.screen.text, "15-minute confirmation")
+        displayed, precision = displayed_deadline(terminal.screen.text)
+        prior = home.note(note_id)
+        start = dt.datetime.now(dt.timezone.utc)
         terminal.confirm()
         terminal.wait(lambda: home.note(note_id)["expires_at"] is not None, "persisted preset deadline")
+        end = dt.datetime.now(dt.timezone.utc)
+        check((end - start).total_seconds() <= 6, "preset confirmation exceeded its bounded interval")
+        preset = home.note(note_id)
+        assert_preset(prior, preset, start, end, displayed, precision)
         terminal.action(r"^Set expiration", "Set expiration")
         terminal.select(r"Never", "Never preset")
         terminal.key(ENTER)
         terminal.confirm()
         terminal.wait(lambda: home.note(note_id)["expires_at"] is None, "Never clearing deadline")
+        never = home.note(note_id)
+        check(never["id"] == preset["id"] and never["content"] == preset["content"] and
+              never["revision"] == preset["revision"] + 1 and never["expiration_source"] == "none" and
+              never["is_pinned"] == preset["is_pinned"] and never["deleted_at"] == preset["deleted_at"],
+              "Never did not clear ownership with exactly one revision and stable other fields")
         terminal.finish()
     check(home.note(note_id)["expiration_source"] == "none", "Never did not clear deadline ownership")
 
@@ -427,19 +532,37 @@ def new_ghost(home):
     home.seed("synthetic persisted ghost neighbor")
     before = home.snapshot()
     sentinel = "M2_GHOST_MEMORY_ONLY_SENTINEL_8be638f1"
+    ghost_text = sentinel + " #ghostprivate\n#kill 1 second"
     with Terminal(home) as terminal:
         terminal.action(r"^New ghost (draft|note)?", "New Ghost")
-        terminal.paste(sentinel + " #ghostprivate\n#kill 1 second")
+        terminal.paste(ghost_text)
         terminal.wait(lambda: "Ghost" in terminal.screen.text, "Ghost status")
-        terminal.pump(1.4)
+        terminal.wait(lambda: sentinel in terminal.screen.text, "ghost sentinel accepted into editor")
+        terminal.pump(3.2)  # Exceed the real >2-second autosave debounce plus tick.
+        check(sentinel in terminal.screen.text, "ghost content disappeared while idle")
+        check(not home.clipboard_records(), "ghost typing/idle invoked an external clipboard writer")
+        check(home.snapshot() == before, "ghost idle/autosave changed persisted state")
+        assert_no_sentinel(home, sentinel)
         # Explicit output and ghost-to-persisted requests must warn before any
         # external writer runs. Enter on their initial Cancel writes nothing.
         terminal.action(r"^Copy note", "ghost copy warning")
+        check(not home.clipboard_records(), "ghost Copy wrote before confirmation")
         terminal.cancel_default()
+        terminal.pump(0.3)
+        check(not home.clipboard_records(), "ghost Copy cancellation invoked a clipboard writer")
         terminal.action(r"^Export note", "ghost export warning")
         terminal.cancel_default()
         terminal.action(r"^(Toggle ghost mode|Convert.*ghost|Ghost mode)", "ghost persistence warning")
         terminal.cancel_default()
+        check(home.snapshot() == before, "canceled ghost output/persistence changed database state")
+        check(not home.clipboard_records(), "canceled ghost output invoked a clipboard writer")
+        # A deliberate Copy confirmation must issue exactly one writer call with
+        # the intended bytes, confined to the disposable audit shim.
+        terminal.action(r"^Copy note", "confirmed ghost copy warning")
+        check(not home.clipboard_records(), "ghost Copy wrote before explicit confirmation")
+        terminal.confirm()
+        terminal.wait(lambda: home.clipboard_matches(ghost_text.encode()),
+                      "one exact confirmed ghost clipboard write")
         terminal.action(r"^Find notes", "ghost search")
         terminal.paste(sentinel)
         terminal.wait(lambda: "No matches" in terminal.screen.text, "ghost absent from search")
@@ -447,6 +570,7 @@ def new_ghost(home):
         terminal.finish()
     home.run("-q")
     check(home.snapshot() == before, "ghost typing/search/exit changed persisted notes/tags/index")
+    check(home.clipboard_matches(ghost_text.encode()), "ghost actions issued additional/unexpected clipboard writes")
     assert_no_sentinel(home, sentinel)
 
 
@@ -462,41 +586,68 @@ def safe_conversion(home):
         terminal.wait(lambda: "Ghost" in terminal.screen.text, "converted ghost status")
         terminal.key(b"\x05")
         terminal.paste(" memory-only addition")
-        terminal.pump(1.3)
+        terminal.wait(lambda: "memory-only addition" in terminal.screen.text,
+                      "converted ghost edit accepted into editor")
+        terminal.pump(3.2)
+        check("memory-only addition" in terminal.screen.text, "converted ghost edit disappeared while idle")
         terminal.finish()
     check(home.snapshot() == before and home.note(note_id) is not None, "safe ghost conversion changed/deleted original")
 
 
 def inactive_expiry(home):
-    due_id = home.seed("synthetic short timer\n#kill 3 seconds")
+    home.seed("synthetic inactive neighbor")
     home.schema3()
     active_id = home.seed("synthetic edited neighbor")
     with Terminal(home) as terminal:
+        terminal.wait(lambda: "synthetic edited neighbor" in terminal.screen.text,
+                      "loaded neighbor before periodic-expiry fixture")
+        # Capture via a separate CLI process only after the interactive startup
+        # has rendered the active neighbor. The CLI performs startup maintenance
+        # before this new directive is saved, so its later transition must occur
+        # in the already-running TUI. This also uses the real parser/fingerprint.
+        due_id = home.seed("synthetic short timer\n#kill 3 seconds")
+        armed = home.note(due_id)
+        check(armed["deleted_at"] is None and parse_instant(armed["expires_at"]) > dt.datetime.now(dt.timezone.utc),
+              "periodic expiry fixture was not active with a future deadline")
         terminal.key(b"\x05")
         terminal.paste(" latest draft")
+        terminal.wait(lambda: "latest draft" in terminal.screen.text,
+                      "neighbor edit accepted before periodic expiry")
+        check(home.note(due_id)["deleted_at"] is None, "inactive note expired before neighbor editing began")
         # QN-028 maintenance cadence is <=30 seconds; no system clock change.
         terminal.wait(lambda: home.note(due_id)["deleted_at"] is not None,
                       "periodic inactive short-directive expiry", timeout=38)
-        check(home.note(due_id)["delete_reason"] == "expired", "inactive expiry lacks reason")
+        expired = home.note(due_id)
+        check(expired["delete_reason"] == "expired" and expired["revision"] == armed["revision"] + 1 and
+              expired["content"] == armed["content"] and expired["expiration_source"] == "directive",
+              "periodic expiry lost content/directive ownership or failed one-revision transition")
         terminal.finish()
     check(home.note(active_id)["content"] == "synthetic edited neighbor latest draft", "inactive expiry lost neighbor draft")
 
 
-def external_expiry(home):
+def external_expiry(home, lifecycle=True):
     note_id = home.seed("synthetic external expiry")
-    home.schema3()
+    if lifecycle:
+        home.schema3()
     latest = "synthetic external expiry local recovery text"
     with Terminal(home) as terminal:
         terminal.key(b"\x05")
-        terminal.paste(" local recovery text")
-        # Independent process-style SQLite write wins before the local debounce.
-        # This fixture changes only synthetic metadata and explicitly advances CAS.
+        # Own the writer transaction before typing: local autosave cannot commit
+        # first, even if either process pauses beyond the debounce interval.
         with home.db() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT revision FROM notes WHERE id=?", (note_id,)).fetchone()
+            terminal.paste(" local recovery text")
+            terminal.wait(lambda: "local recovery text" in terminal.screen.text,
+                          "dirty local draft while external writer owns transaction", timeout=2)
             now = utcstamp(dt.datetime.now(dt.timezone.utc))
-            result = db.execute("UPDATE notes SET deleted_at=?,delete_reason='expired',revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL",
+            reason = ",delete_reason='expired'" if lifecycle else ""
+            result = db.execute("UPDATE notes SET deleted_at=?" + reason + ",revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL",
                                 (now, note_id, row[0]))
             check(result.rowcount == 1, "external expiry fixture failed its CAS")
+            check(db.execute("SELECT content FROM notes WHERE id=?", (note_id,)).fetchone()[0] == "synthetic external expiry",
+                  "local autosave committed before controlled external expiry")
+            db.commit()
         expired = home.note(note_id)
         terminal.key(ESC)  # Save/exit must report conflict and keep the draft.
         terminal.wait(lambda: "Conflict" in terminal.screen.text or "conflict" in terminal.screen.text,
@@ -513,6 +664,39 @@ def external_expiry(home):
     home.healthy()
 
 
+def controlled_external_delete(home):
+    # The existing schema-2 CAS recovery path validates writer ordering and the
+    # PTY recovery harness before schema-3 lifecycle features are available.
+    external_expiry(home, lifecycle=False)
+
+
+def assert_trash_readonly(home, terminal, note_id):
+    terminal.wait(lambda: "synthetic Trash source" in terminal.screen.text, "original read-only Trash preview")
+    snapshot = home.snapshot()
+    original = home.note(note_id)["content"]
+    forbidden = "M2_MUST_NOT_EDIT_TRASH"
+    terminal.paste(forbidden)
+    check(forbidden not in terminal.screen.text and "synthetic Trash source" in terminal.screen.text,
+          "Trash preview accepted local text editing or lost original preview")
+    terminal.pump(3.2)
+    check(forbidden not in terminal.screen.text and "synthetic Trash source" in terminal.screen.text,
+          "Trash buffer accepted text during idle/autosave")
+    check(home.snapshot() == snapshot, "Trash preview changed stored notes during idle/autosave")
+    return snapshot, original, forbidden
+
+
+def trash_readonly(home):
+    note_id = home.seed("synthetic Trash source")
+    with Terminal(home) as terminal:
+        terminal.action(r"^Move to Trash", "Move to Trash")
+        terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "soft delete")
+        terminal.action(r"^Open Trash", "Open Trash")
+        assert_trash_readonly(home, terminal, note_id)
+        terminal.ensure_editor()
+        terminal.finish()
+    check(home.note(note_id)["content"] == "synthetic Trash source", "read-only Trash lost original content")
+
+
 def trash_roundtrip(home):
     note_id = home.seed("synthetic Trash source\n#kill 1 hour")
     home.schema3()
@@ -520,10 +704,7 @@ def trash_roundtrip(home):
         terminal.action(r"^Move to Trash", "Move to Trash")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "soft delete")
         terminal.action(r"^Open Trash", "Open Trash")
-        trashed = home.snapshot()
-        terminal.paste("M2_MUST_NOT_EDIT_TRASH")
-        terminal.pump(0.3)
-        check(home.snapshot() == trashed, "Trash preview accepted text editing")
+        trashed, original, forbidden = assert_trash_readonly(home, terminal, note_id)
         terminal.action(r"^Delete forever", "Delete forever")
         terminal.four_sizes()
         terminal.cancel_default()
@@ -536,29 +717,36 @@ def trash_roundtrip(home):
         terminal.select(r"Restore without timer", "restore without timer")
         terminal.key(ENTER)
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID restore")
-        check(home.note(note_id)["expires_at"] is None, "safe restore rearmed directive")
-        # Return to editor whether restore navigates immediately or stays in Trash.
-        if re.search(r"Trash", terminal.screen.text):
-            terminal.key(ESC)
+        restored = home.note(note_id)
+        check(restored["expires_at"] is None, "safe restore rearmed directive")
+        check(restored["content"] == original and forbidden not in terminal.screen.text,
+              "read-only marker reached restored content/local buffer")
+        terminal.ensure_editor()
         terminal.action(r"^Move to Trash", "second soft delete")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "second soft delete")
         terminal.action(r"Undo.*(Trash|trash)|Restore last", "Undo last move to Trash")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID Trash undo")
+        check(home.note(note_id)["content"] == original and forbidden not in terminal.screen.text,
+              "read-only marker reached same-ID undo content/local buffer")
         terminal.action(r"^Move to Trash", "third soft delete")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "third soft delete")
         terminal.action(r"^Open Trash", "Open Trash")
         terminal.action(r"^Delete forever", "confirmed Delete forever")
         terminal.confirm()
         terminal.wait(lambda: home.note(note_id) is None, "confirmed permanent deletion")
-        terminal.key(ESC)  # Trash -> editor.
+        terminal.ensure_editor()
         terminal.finish()
     home.healthy()
 
 
 BASELINE = [("fragmented terminal capability/UTF-8 parser", capability_parser),
+            ("clipboard shims/endpoints/exact writer audit", clipboard_isolation),
+            ("exact preset/ownership/revision assertion guards", preset_assertions),
             ("four sizes/tiny/nested Escape/keyboard", nested_sizes),
             ("legacy Commands/default-Cancel ghost", conversion_cancel),
-            ("locked save/typing/resize/latest draft", locked_save)]
+            ("locked save/typing/resize/latest draft", locked_save),
+            ("controlled external winner/local copy recovery", controlled_external_delete),
+            ("Trash visible/stored read-only beyond debounce", trash_readonly)]
 M2 = [("TTL picker/absolute confirmation/Never", expiration_picker),
       ("legacy pin/unpin/default Cancel/no rearm", pin_unpin),
       ("New Ghost/search/restart/DB/files audit", new_ghost),

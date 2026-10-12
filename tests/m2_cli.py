@@ -9,10 +9,13 @@ features and return nonzero until they pass. No real HOME or note DB is opened.
 import argparse
 import contextlib
 import datetime as dt
+import hashlib
+import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 
 
@@ -45,12 +48,36 @@ class Home:
         self.temp = tempfile.TemporaryDirectory(prefix="quicknote-m2-")
         self.path = Path(self.temp.name)
         self.db_path = self.path / ".local/share/quicknote-tui/notes.sqlite"
+        self.clipboard_audit = self.path / "clipboard-audit.jsonl"
+        self.stub_dir = self.path / ".test-bin"
+        self.stub_dir.mkdir()
+        runtime = self.path / ".runtime"
+        runtime.mkdir(mode=0o700)
         self.env = dict(os.environ, HOME=str(self.path), TERM="xterm-256color",
                         XDG_CONFIG_HOME=str(self.path / ".config"),
                         XDG_DATA_HOME=str(self.path / ".local/share"),
                         XDG_CACHE_HOME=str(self.path / ".cache"),
                         XDG_STATE_HOME=str(self.path / ".local/state"),
-                        TMPDIR=str(self.path), TZ="America/Los_Angeles")
+                        TMPDIR=str(self.path), TZ="America/Los_Angeles",
+                        XDG_RUNTIME_DIR=str(runtime),
+                        QN_M2_CLIPBOARD_AUDIT=str(self.clipboard_audit),
+                        PATH=str(self.stub_dir) + os.pathsep + os.environ.get("PATH", os.defpath))
+        # The tested writer names always resolve to shims. Remove real desktop
+        # endpoints as an additional guard; no scenario can update a real clipboard.
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY",
+                     "DBUS_SESSION_BUS_ADDRESS", "SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE"):
+            self.env.pop(name, None)
+        shim = (f"#!{sys.executable}\n"
+                "import hashlib, json, os, pathlib, sys\n"
+                "data = sys.stdin.buffer.read()\n"
+                "record = {'writer': pathlib.Path(sys.argv[0]).name, 'bytes': len(data), "
+                "'sha256': hashlib.sha256(data).hexdigest()}\n"
+                "with pathlib.Path(os.environ['QN_M2_CLIPBOARD_AUDIT']).open('a') as output:\n"
+                "    output.write(json.dumps(record) + '\\n')\n")
+        for writer in ("pbcopy", "wl-copy", "xclip", "xsel"):
+            path = self.stub_dir / writer
+            path.write_text(shim)
+            path.chmod(0o700)
 
     def __enter__(self):
         return self
@@ -119,6 +146,17 @@ class Home:
             check(db.execute("SELECT COUNT(*) FROM notes").fetchone()[0] ==
                   db.execute("SELECT COUNT(*) FROM notes_fts").fetchone()[0], "notes/FTS row counts differ")
 
+    def clipboard_records(self):
+        if not self.clipboard_audit.exists():
+            return []
+        return [json.loads(line) for line in self.clipboard_audit.read_text().splitlines()]
+
+    def clipboard_matches(self, payload, expected_calls=1):
+        records = self.clipboard_records()
+        return len(records) == expected_calls and all(
+            record["bytes"] == len(payload) and record["sha256"] == hashlib.sha256(payload).hexdigest()
+            for record in records)
+
 
 def quiet_capture(home):
     home.run("-q", data=b"synthetic capture #m2cli")
@@ -150,7 +188,8 @@ def title_append(home):
 
 
 def write_failure(home):
-    home.seed("synthetic unchanged #before")
+    note_id = home.seed("synthetic unchanged #before")
+    original = home.note(note_id)
     with home.db() as db:
         db.execute("CREATE TRIGGER m2_fail_update BEFORE UPDATE OF content ON notes BEGIN SELECT RAISE(ABORT,'synthetic write failure'); END")
     before = home.snapshot()
@@ -158,7 +197,17 @@ def write_failure(home):
     check(home.snapshot() == before, "write error changed content/revision/tags/FTS")
     with home.db() as db:
         db.execute("DROP TRIGGER m2_fail_update")
-    home.run("-q", "-l", "-n", "retry succeeds")
+    home.run("-q", "-l", "-n", "retry succeeds #retry")
+    retried = home.note(note_id)
+    check(retried["content"] == original["content"] + "\nretry succeeds #retry",
+          "successful retry did not append to the original ID")
+    check(retried["revision"] == original["revision"] + 1,
+          "successful retry did not advance exactly one revision")
+    with home.db() as db:
+        check({row[0] for row in db.execute("SELECT tag FROM tags WHERE note_id=?", (note_id,))} == {"#before", "#retry"},
+              "successful retry did not atomically update tags")
+        check(db.execute("SELECT content FROM notes_fts WHERE rowid=?", (note_id,)).fetchone()[0] == retried["content"],
+              "successful retry did not update FTS content")
     home.healthy()
 
 
