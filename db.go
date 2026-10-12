@@ -371,6 +371,7 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 // saveNoteChecked atomically persists content and tags. On failure the
 // caller keeps its original note identity and its unsaved editor buffer.
 func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
+ original := n
  if n.ID == -1 || (n.ID == 0 && n.Content == "") || n.IsGhost {return n,nil}
  killStartStr:=""
  if !n.KillStart.IsZero() {killStartStr=n.KillStart.Format(time.RFC3339)}
@@ -410,31 +411,31 @@ func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
 	}
 
  tx,err:=db.Begin()
- if err!=nil {return n,fmt.Errorf("begin save: %w",err)}
+ if err!=nil {return original,fmt.Errorf("begin save: %w",err)}
  defer tx.Rollback()
  if n.ID==0 {
   var res sql.Result
   res,err=tx.Exec("INSERT INTO notes(content, kill_hash, kill_start) VALUES(?,?,?)",n.Content,n.KillHash,killStartStr)
-  if err!=nil {return n,fmt.Errorf("insert note: %w",err)}
+  if err!=nil {return original,fmt.Errorf("insert note: %w",err)}
   var id int64
   id,err=res.LastInsertId()
-  if err!=nil {return n,fmt.Errorf("read new note ID: %w",err)}
+  if err!=nil {return original,fmt.Errorf("read new note ID: %w",err)}
   n.ID=int(id)
  } else {
   var res sql.Result
   res,err=tx.Exec("UPDATE notes SET content=?, updated_at=CURRENT_TIMESTAMP, kill_hash=?, kill_start=? WHERE id=? AND deleted_at IS NULL",n.Content,n.KillHash,killStartStr,n.ID)
-  if err!=nil {return n,fmt.Errorf("update note %d: %w",n.ID,err)}
+  if err!=nil {return original,fmt.Errorf("update note %d: %w",n.ID,err)}
   affected,e:=res.RowsAffected()
-  if e!=nil {return n,fmt.Errorf("count updated rows: %w",e)}
-  if affected!=1 {return n,fmt.Errorf("note %d no longer active",n.ID)}
+  if e!=nil {return original,fmt.Errorf("count updated rows: %w",e)}
+  if affected!=1 {return original,fmt.Errorf("note %d no longer active",n.ID)}
  }
- if _,err=tx.Exec("DELETE FROM tags WHERE note_id=?",n.ID);err!=nil {return n,fmt.Errorf("clear tags: %w",err)}
+ if _,err=tx.Exec("DELETE FROM tags WHERE note_id=?",n.ID);err!=nil {return original,fmt.Errorf("clear tags: %w",err)}
  for _,tag:=range n.Tags {
-  if _,err=tx.Exec("INSERT INTO tags(note_id,tag) VALUES(?,?)",n.ID,tag);err!=nil {return n,fmt.Errorf("save tag %q: %w",tag,err)}
+  if _,err=tx.Exec("INSERT INTO tags(note_id,tag) VALUES(?,?)",n.ID,tag);err!=nil {return original,fmt.Errorf("save tag %q: %w",tag,err)}
  }
  var duplicates int
- if err=tx.QueryRow("SELECT count(*) FROM notes WHERE content=? AND id<>? AND deleted_at IS NULL",n.Content,n.ID).Scan(&duplicates);err!=nil {return n,fmt.Errorf("check duplicates: %w",err)}
- if err=tx.Commit();err!=nil {return n,fmt.Errorf("commit note: %w",err)}
+ if err=tx.QueryRow("SELECT count(*) FROM notes WHERE content=? AND id<>? AND deleted_at IS NULL",n.Content,n.ID).Scan(&duplicates);err!=nil {return original,fmt.Errorf("check duplicates: %w",err)}
+ if err=tx.Commit();err!=nil {return original,fmt.Errorf("commit note: %w",err)}
  now:=time.Now()
  n.UpdatedTime=now
  n.UpdatedAt=now.Format("02 Jan 2006, 3:04 PM")
