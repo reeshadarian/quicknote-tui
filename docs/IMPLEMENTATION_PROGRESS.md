@@ -1,6 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
+Latest implementation SHA: `595dd7da34d47852b511349e4750f11862c3d161`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-011 — implementation and acceptance verified; next QN-012
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
@@ -162,7 +163,7 @@ Next recommended task: QN-011 optimistic revision compare-and-swap, after ensuri
 
 ## QN-011 — Revision CAS and recoverable conflicts (2026-10-12 UTC)
 
-**DONE on `dev/v2`.** Implementation commit: the commit containing this entry (`git log --grep='QN-011'`); the exact SHA is recorded in the follow-up documentation entry. Starting HEAD was `f0ffaec` (documentation consolidation). No changes or merges to `main`.
+**DONE on `dev/v2`.** Implementation and accompanying ledger/handoff commit: `595dd7da34d47852b511349e4750f11862c3d161`. This documentation follow-up records its exact SHA. Starting HEAD was `f0ffaec` (documentation consolidation). No changes or merges to `main`.
 
 ### Changes and contracts
 
@@ -201,3 +202,5 @@ Environment: Linux amd64, Go **1.25.9** installed in `/tmp/go`, CGO/GCC availabl
 Schema remains **user_version 2**; no new migration or retention policy change. Existing v1 backup/migration/recovery fixtures pass. Production database/backup operations were not performed.
 
 No QN-011 blocker remains. Saving is still synchronous and can wait for the SQLite busy timeout; **QN-012 is next READY** (011 prerequisite satisfied): typed asynchronous save/load/search/highlight commands, note/request/local-version generations, stale-completion rejection, and T-02/T-24. QN-013 still owns the broader Draft/NoteID refactor. List/search compatibility reads still suppress some errors; permanent-delete confirmation from Trash is QN-032; ghost conversion safety is QN-031; editor trailing-newline behavior remains open. Pin/TTL APIs here provide CAS groundwork without exposing those later lifecycle features.
+
+**Publication:** direct Git HTTPS push had no credentials in this container. The connected GitHub API published the implementation with tree `8b1970c759b360d99bfc5464d841501cd9b6602c`, exactly matching the locally committed/tested implementation tree. The documentation follow-up records the published implementation SHA. Only `dev/v2` is advanced with an expected-head check; `main` remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.

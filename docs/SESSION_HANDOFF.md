@@ -4,6 +4,7 @@
 **Working branch:** `dev/v2`
 **Protected branch:** `main` (do not change or merge without explicit approval)
 **Last maintainer-verified baseline:** 2026-10-11
+**QN-011 implementation commit:** `595dd7da34d47852b511349e4750f11862c3d161`
 **Latest development verification:** QN-011, 2026-10-12 UTC; full suite/race/vet/build and scripted PTY/CLI checks passed. See the living ledger for exact commits and evidence.
 
 ## Start here: authoritative documents (all in this repository)
