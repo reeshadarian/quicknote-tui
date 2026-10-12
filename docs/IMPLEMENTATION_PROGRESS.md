@@ -1,7 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: QN-012 publication recorded below
+Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-012 — implemented and acceptance verified; next QN-013
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
@@ -231,7 +231,7 @@ The requested task was already implemented in `595dd7da34d47852b511349e4750f1186
 
 ## QN-012 — Typed asynchronous commands and stale-result protection (2026-10-12 UTC)
 
-**DONE on `dev/v2`**, starting from `3d7c8659d92cea926840af77578dca4d85b771d3`. Implementation SHA is recorded in the publication follow-up. This task includes T-02 and T-24; it preserves the QN-011 storage CAS and T-17. No changes to `main`.
+**DONE on `dev/v2`**, starting from `3d7c8659d92cea926840af77578dca4d85b771d3`. Implementation commit: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`. This task includes T-02 and T-24; it preserves the QN-011 storage CAS and T-17. No changes to `main`.
 
 ### Changed files and behavior
 
@@ -271,3 +271,6 @@ Linux amd64, Go **1.25.9**, GCC/CGO available. The temporary `/tmp/go` toolchain
 Schema stays **user_version 2**. No migration, retention changes, dependency upgrades, production database/backup operations, or `main` changes. CLI byte-normalization remains unchanged and assigned to QN-040. Shell filters/export/clipboard still have their legacy synchronous behavior; their dedicated tasks remain QN-039/041/036. Search grammar/escaping and fuzzy ranking remain QN-018–021. Async work can complete after cancellation; obsolete read/highlight results are discarded, while successful writes are reconciled or reported as saved copies. No latency/performance budget is claimed from these correctness checks.
 
 No QN-012 blocker remains. **QN-013 is next READY**: explicit EditorDraft/authoritative NoteID, bounded per-draft history and source maps; preserve the typed commands, session versions, CAS, and conflict recovery while replacing index-driven state. Required T-01–04 and T-17 must pass. ID-zero draft/ghost bookkeeping and broader newline/tab/grapheme layout work belong to that refactor and the assigned editor/lifecycle tasks. Permanent deletion confirmation from Trash remains QN-032.
+
+
+**QN-012 publication:** the connected GitHub API published implementation commit `15dfba9cc8145eee51782d5f3c1b7463f81ec74b` directly to `dev/v2`, with expected head `3d7c8659d92cea926840af77578dca4d85b771d3`. Its tree `bc0b036a05d42c0d8cbf6a178a1f7d256e37c036` exactly matches the locally staged/tested implementation tree. This documentation-only follow-up records the exact published SHA; it makes no further Go changes. `main` remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.

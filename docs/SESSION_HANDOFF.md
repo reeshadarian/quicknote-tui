@@ -4,7 +4,7 @@ Repository: https://github.com/reeshadarian/quicknote-tui
 Working branch: `dev/v2`
 Protected branch: `main` — do not modify or merge without explicit approval.
 Latest task: **QN-012 implemented and verified**, 2026-10-12 UTC.
-Implementation commit: recorded in the publication follow-up.
+Implementation commit: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`.
 Next task: **QN-013 — EditorDraft and authoritative NoteID**.
 
 ## Authoritative documents
