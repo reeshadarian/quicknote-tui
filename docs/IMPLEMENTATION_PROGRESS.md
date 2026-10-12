@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-013–QN-017 DONE; next READY QN-048 (outside requested range)
+Current task: QN-048 DONE; next READY QN-028
 Updated: 2026-10-12 UTC
 
 ## Completed repository changes
@@ -340,3 +340,33 @@ All five user-selected tasks QN-013–QN-017 are complete in separate implementa
 | QN-017 | `a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b` |
 
 Each was published directly to dev/v2 through the connected GitHub API using an expected-head check; main was never written or merged. The QN-017 API tree matched the locally staged/tested tree exactly. This final documentation follow-up resolves publication placeholders and records the next-session state; it makes no additional Go changes. Main remains `d3e5a119cdf12ec99fcc14a62545f60729adea54`.
+
+
+## QN-048 — Preserve math/code/snippets (2026-10-12)
+
+**DONE on dev/v2**, implementation commit is the commit containing this entry (exact SHA recorded in the publication follow-up). Starting HEAD and GitHub dev/v2 head both `8080e1f0c53ac036a409ee8ffba9aaf02fa72c13`. Selected only the user-requested QN-048; dependencies QN-004/013 are complete. Read all governing documents and inspected current code. Pre-existing untracked `.config/`, `.local/`, `vim_profile.log` were left untouched.
+
+**Changed files:** `engine.go`, new `compatibility_test.go`, this ledger, `docs/SESSION_HANDOFF.md`.
+
+- Added eight T-35 compatibility tests covering arithmetic, constants/functions, percentages, roots/factorials, variable assignments, recalculation/trigger rules, base/temperature/length conversions, leap-day/time arithmetic, all legacy snippets plus UUID/offsets, Unicode cursor boundaries and code/comment exclusions, Markdown/checklist formatting and undo, mode toggles, smart list numbering, heading extraction and syntax highlighting. Model coverage verifies calculation saves to the authoritative note, leaves another note intact, and undoes atomically; code-mode snippets remain literal and equations are not evaluated. Existing equals-key spacing in code mode is preserved.
+- Reproduced missing `:date:` and malformed math-call crashes before fixing. `:date:` now aliases `:today:` (02 Jan 2006); existing capitalization/format variants remain supported. Unary calls validate arity/type and finite values. Factorials require nonnegative integers and bounded iteration; non-finite results/assignments remain unchanged instead of inserting NaN/Inf. Equality text (`2==2`) remains unchanged instead of being rewritten as an equation. Intentional invalid-input correction: negative/fractional factorials no longer return 1 or truncate. Valid existing arithmetic remains compatible; no new language or dependency.
+
+**Verification PASSED** (Linux amd64, `go1.26.8-X:nodwarf5`, CGO=1, sqlite_fts5):
+
+- Baseline at 8080e1f: `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` (10.586s).
+- Final: `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` (10.617s).
+- Final race: `CGO_ENABLED=1 go test -tags sqlite_fts5 -race -count=1 ./...` (13.206s).
+- `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=20 -run TestQN048 .` (0.501s).
+- `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`; `CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-qn048 .`.
+- `CGO_ENABLED=1 go test -tags sqlite_fts5 -run '^$' -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s -parallel=2 .` (21,229 executions).
+- `gofmt -l engine.go compatibility_test.go` returned no filenames; `git diff --check` passed.
+- Synthetic built-binary scripted PTY: keyboard calculation and date expansion, resize through 120x40/80x24/50x12/25x5, clean exit and persisted content verified. Quiet CLI fixture capture emitted empty stdout/stderr and exit 0; SQLite integrity_check returned ok, user_version 2. Textual snapshot: math body `2+2 = 4`; snippet body expands the typed `:date:` to the local date. Harness was stored at `/tmp/qn048-pty.py`; only temporary synthetic HOMEs were used.
+- Independent code review approved with no critical/important findings. Suggested cursor/code-mode assertions were added and passed; reviewer did not independently run full suites.
+
+**Initial failures:** default Go cache was read-only in sandbox; approved cache access allowed tests. New regressions initially failed for missing date alias, bad-call panics/invalid values and equality rewriting; all corrected. Model undo fixture was corrected to expect existing atomic undo. PTY harness initially mishandled terminal capability responses, then lacked responses, then selected a different recent note; corrected by answering queries as received and using one synthetic HOME per scenario. Final PTY checks passed. No final test failure.
+
+**NOT RUN:** human Fedora/Zsh/Kitty/tmux/clipboard matrix, remote CI, release benchmarks. Automated PTY evidence is not human terminal verification.
+
+**Data/risks:** schema stays user_version 2; no schema/retention/keymap/CLI changes or production DB/backup/migration operations. Stable identities, CAS, dirty/history and async generations remain covered by existing full/race suites. Legacy unit/date syntax is preserved; dimensional conversion validation and broader date-parser redesign are outside this compatibility task. main remains `d3e5a119cdf12ec99fcc14a62545f60729adea54` locally and on GitHub. No implementation blocker remains.
+
+**Next READY:** QN-028 durable TTL engine (QN-010/011/012 complete), followed by dependent lifecycle tasks. Permanent Trash deletion remains QN-032; no unrelated feature was implemented.

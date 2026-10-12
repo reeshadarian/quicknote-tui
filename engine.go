@@ -394,29 +394,51 @@ func getKillTimerInfo(content string) (string, *time.Duration) {
 }
 
 // --- Math Functions & Constants ---
+// Unary functions reject malformed calls and non-finite results instead of
+// panicking on user text or inserting NaN/Inf into a draft.
+func unaryMath(fn func(float64) float64) govaluate.ExpressionFunction {
+	return func(args ...interface{}) (interface{}, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("expected one numeric argument")
+		}
+		n, ok := args[0].(float64)
+		if !ok || math.IsNaN(n) || math.IsInf(n, 0) {
+			return nil, fmt.Errorf("expected a finite numeric argument")
+		}
+		result := fn(n)
+		if math.IsNaN(result) || math.IsInf(result, 0) {
+			return nil, fmt.Errorf("result is not finite")
+		}
+		return result, nil
+	}
+}
+
+func factorial(n float64, step int) float64 {
+	// Bound before conversion/iteration, including huge inputs. Values
+	// beyond these caps overflow; unaryMath also checks the final result.
+	limit := 170.0
+	if step == 2 {
+		limit = 300
+	}
+	if n < 0 || n != math.Trunc(n) || n > limit {
+		return math.NaN()
+	}
+	result := 1.0
+	for i := int(n); i > 0; i -= step {
+		result *= float64(i)
+	}
+	return result
+}
+
 var mathFunctions = map[string]govaluate.ExpressionFunction{
-	"sqrt":  func(args ...interface{}) (interface{}, error) { return math.Sqrt(args[0].(float64)), nil },
-	"cbrt":  func(args ...interface{}) (interface{}, error) { return math.Cbrt(args[0].(float64)), nil },
-	"log":   func(args ...interface{}) (interface{}, error) { return math.Log10(args[0].(float64)), nil },
-	"log2":  func(args ...interface{}) (interface{}, error) { return math.Log2(args[0].(float64)), nil },
-	"ceil":  func(args ...interface{}) (interface{}, error) { return math.Ceil(args[0].(float64)), nil },
-	"floor": func(args ...interface{}) (interface{}, error) { return math.Floor(args[0].(float64)), nil },
-	"fact": func(args ...interface{}) (interface{}, error) {
-		n := int(args[0].(float64))
-		res := 1.0
-		for i := 2; i <= n; i++ {
-			res *= float64(i)
-		}
-		return res, nil
-	},
-	"doublefact": func(args ...interface{}) (interface{}, error) {
-		n := int(args[0].(float64))
-		res := 1.0
-		for i := n; i > 0; i -= 2 {
-			res *= float64(i)
-		}
-		return res, nil
-	},
+	"sqrt":       unaryMath(math.Sqrt),
+	"cbrt":       unaryMath(math.Cbrt),
+	"log":        unaryMath(math.Log10),
+	"log2":       unaryMath(math.Log2),
+	"ceil":       unaryMath(math.Ceil),
+	"floor":      unaryMath(math.Floor),
+	"fact":       unaryMath(func(n float64) float64 { return factorial(n, 1) }),
+	"doublefact": unaryMath(func(n float64) float64 { return factorial(n, 2) }),
 }
 
 var mathConstants = map[string]interface{}{
@@ -562,6 +584,11 @@ func preprocessMath(expr string) string {
 	return expr
 }
 
+func finiteMathResult(result interface{}) bool {
+	n, ok := result.(float64)
+	return ok && !math.IsNaN(n) && !math.IsInf(n, 0)
+}
+
 func updateMathBuffer(val string, lastKey string) (string, bool) {
 	changed := false
 	lines := strings.Split(val, "\n")
@@ -593,7 +620,7 @@ func updateMathBuffer(val string, lastKey string) (string, bool) {
 				processedExpr := preprocessMath(rawExpr)
 				expression, err := govaluate.NewEvaluableExpressionWithFunctions(processedExpr, mathFunctions)
 				if err == nil {
-					if res, err := expression.Evaluate(params); err == nil {
+					if res, err := expression.Evaluate(params); err == nil && finiteMathResult(res) {
 						params[varName] = res
 					}
 				}
@@ -602,6 +629,9 @@ func updateMathBuffer(val string, lastKey string) (string, bool) {
 		}
 
 		if idx := strings.Index(line, "="); idx != -1 {
+			if strings.HasPrefix(line[idx:], "==") {
+				continue
+			}
 			if strings.Count(line[:idx], "`")%2 != 0 {
 				continue
 			}
@@ -621,7 +651,7 @@ func updateMathBuffer(val string, lastKey string) (string, bool) {
 				expression, err := govaluate.NewEvaluableExpressionWithFunctions(processedExpr, mathFunctions)
 				if err == nil {
 					result, err := expression.Evaluate(params)
-					if err == nil {
+					if err == nil && finiteMathResult(result) {
 						resStr := fmt.Sprintf("%f", result)
 						if strings.Contains(resStr, ".") {
 							resStr = strings.TrimRight(strings.TrimRight(resStr, "0"), ".")
@@ -662,7 +692,7 @@ func expandKeywords(val string, isCodeMode bool, lastKey string, cursorRow int, 
 	lines := strings.Split(val, "\n")
 	inCodeBlock := false
 
-	reDate := regexp.MustCompile(`:(today|Today|time|Time|now|Now)(?:\s*([\+\-])\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+))?:`)
+	reDate := regexp.MustCompile(`:(date|today|Today|time|Time|now|Now)(?:\s*([\+\-])\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+))?:`)
 	reUUID := regexp.MustCompile(`:uuid:`)
 
 	for i := range lines {
@@ -734,7 +764,7 @@ func expandKeywords(val string, isCodeMode bool, lastKey string, cursorRow int, 
 
 			var formatted string
 			switch base {
-			case "today":
+			case "date", "today":
 				formatted = outTime.Format("02 Jan 2006")
 			case "Today":
 				formatted = outTime.Format("Mon 02 Jan 2006")

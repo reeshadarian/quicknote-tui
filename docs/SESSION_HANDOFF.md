@@ -16,7 +16,7 @@ The maintainer requested **QN-013 through QN-017**. All five are DONE in indepen
 | QN-016 | `ffd2bb210d9d3bc412f56f17a18c59a0efdf936e` | Shared grapheme/cell wrapping, cursor/mouse mapping and responsive pure panels |
 | QN-017 | a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b | Nested overlays, default-Cancel confirmations, safe reviewed replacements and recoverable errors |
 
-The specification also lists **QN-048** in M1. It remains outside that explicitly requested range and is **next READY**, followed by applicable M2/M3 tasks. Do not claim every M1/release feature is complete solely because QN-013–017 are done.
+The specification also lists **QN-048** in M1. It was completed in the subsequent QN-048 session below; **QN-028 is next READY**. Do not claim every M1/release feature is complete solely because QN-013–017 are done.
 
 ## Authoritative context
 
@@ -45,11 +45,15 @@ Additional checks: 20 repeated concurrency/async/keymap/layout/overlay acceptanc
 
 Not verified: human-operated Fedora/Zsh/Kitty/tmux/clipboard matrix, remote GitHub CI or release benchmarks. Automated PTY is not manual Fedora evidence. No real notes, production backup/migration, main changes, dependency upgrade or new schema version.
 
-## Next task: QN-048 — Preserve math/code/snippets
+## Completed QN-048; next READY: QN-028 — Durable TTL engine
 
-Add focused compatibility coverage for existing math/code modes, calculations, formatting, snippets, heading extraction and date/units (T-35), fixing only demonstrated regressions. Preserve the new draft/action/keymap/layout/overlay contracts and CAS/async checks. Required dependencies QN-004 and QN-013 are satisfied. Afterwards select the earliest ready P1 task from the living ledger; do not silently bundle M2/M3 features.
+QN-048 is DONE in the implementation commit containing this handoff; the ledger publication follow-up records its exact SHA. `engine.go` and `compatibility_test.go` now cover T-35 math/code/snippets, Markdown/undo, headings/highlighting, units/dates and save identity. `:date:` aliases `:today:`. Malformed unary calls, negative/fractional/overflow factorials, NaN/Inf and equality text remain unchanged instead of crashing or inserting invalid values. All existing valid formats and shortcuts are preserved.
 
-Important files: `draft.go`, `actions.go`, `keymap.go`, `layout.go`, `overlays.go`, `tui.go`, `tui_async.go`, `tui_conflict.go`, `engine.go`, `store.go`, the matching new `*_test.go` files and existing `cas_*test.go`.
+This session passed full tests/race/vet/build, twenty T-35 repetitions, bounded Unicode fuzz (21,229 executions), and built-binary scripted PTY calculation/date expansion/four-size/quiet CLI/SQLite integrity checks with Go 1.26.8-X:nodwarf5, CGO and sqlite_fts5. Human Fedora/tmux/clipboard, remote CI and release benchmarks were NOT RUN. Only synthetic temporary data was used; schema remains 2, main unchanged. See the living ledger for exact commands and corrected initial failures.
+
+Next implement **QN-028** per the full specification: prerequisites QN-010/011/012 are complete. Durable TTL requires persisted absolute UTC deadlines, startup/periodic all-note expiry, an injectable clock, directive precedence and T-07/T-20. Follow the existing backup and data-preservation requirements before any schema/retention changes. Do not bundle TTL UI/pinning/Trash tasks.
+
+Important files: `engine.go`, `compatibility_test.go`, `store.go`, `db.go`, `draft.go`, `tui_async.go`, `tui.go`, and existing migration/lifecycle tests. Inspect actual branch/ledger before choosing work.
 
 ## Fedora / Zsh gates
 
@@ -81,4 +85,4 @@ Never run destructive tests against real `~/.local/share/quicknote-tui/notes.sql
 
 ## Ready-to-paste continuation
 
-> Continue https://github.com/reeshadarian/quicknote-tui on `dev/v2`. Read AGENTS.md, the full docs/QUICKNOTE_V2_SPEC.md, docs/IMPLEMENTATION_PROGRESS.md, docs/SESSION_HANDOFF.md and docs/LOCAL_TESTING.md; inspect current HEAD/status/log. QN-013–017 are committed and verified; implement **QN-048 math/code/snippet compatibility** with T-35 coverage unless the branch has advanced. Preserve explicit draft identities, typed async/stale-result guards, CAS/conflict recovery, registry/keymap/layout/overlay contracts and all existing notes/CLI behavior. Run CGO/sqlite_fts5 full tests/race/vet/build, commit only to dev/v2 and update exact SHA/test/limitation/handoff evidence. Never alter or merge main without permission, ask for documents already in the repository, or claim unexecuted checks passed.
+> Continue https://github.com/reeshadarian/quicknote-tui on `dev/v2`. Read AGENTS.md, the full docs/QUICKNOTE_V2_SPEC.md, docs/IMPLEMENTATION_PROGRESS.md, docs/SESSION_HANDOFF.md and docs/LOCAL_TESTING.md; inspect current HEAD/status/log. QN-048 is committed and verified; next READY is **QN-028 durable TTL** unless newly directed or the branch has advanced. Preserve explicit draft identities, typed async/stale-result guards, CAS/conflict recovery, registry/keymap/layout/overlay contracts and all existing notes/CLI behavior. Use synthetic fixtures, verify SQLite backups before schema/retention changes, run CGO/sqlite_fts5 full tests/race/vet/build, commit only to dev/v2 and update exact SHA/test/limitation/handoff evidence. Never alter or merge main without permission or claim unexecuted checks passed.
