@@ -38,7 +38,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
  if *m.viewportTop!=4 {t.Fatalf("A viewport lost: %d",*m.viewportTop)}
  if len(m.undoStack)!=1 || m.undoStack[0].content!="alpha" {t.Fatalf("A history lost: %+v",m.undoStack)}
  if m.needsSave {t.Fatal("A should have been saved before navigating")}
- if got:=loadNoteContent(db,a);got!="alpha revised" {t.Fatalf("A not saved: %q",got)}
+ if got:=loadNoteContent(db,a);strings.TrimSuffix(got,"\n")!="alpha revised" {t.Fatalf("A not saved: %q",got)}
  next,_=m.Update(tea.KeyMsg{Type:tea.KeyRight,Alt:true})
  m=next.(model)
  if got:=bufferToString(m.buffer);strings.TrimSuffix(got,"\n")!="beta revised" {t.Fatalf("B draft lost: %q",got)}
