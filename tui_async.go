@@ -497,6 +497,7 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.bindDraft()
+	explicit := false
 	if intent, ok := msg.(ActionMsg); ok {
 		a, found := findAction(intent.ID)
 		if !found || !a.Available(m.actionContext()) {
@@ -507,16 +508,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashMsg = reason
 			return m, nil
 		}
+		if intent.ID == "commands.open" {
+			m.openCommands()
+			return m, nil
+		}
+		if intent.ID == "keyboard.profile" {
+			cmd := m.switchKeyboard()
+			return m, cmd
+		}
 		msg = a.Execute()
+		explicit = true
 	}
-	if key, ok := msg.(tea.KeyMsg); ok {
-		if a, found := actionForKey(key.String(), m.actionContext()); found {
+	if key, ok := msg.(tea.KeyMsg); ok && !explicit && m.state != stateCommands {
+		if a, found := m.boundAction(key.String(), m.actionContext()); found {
 			if enabled, reason := a.Enabled(m.actionContext()); !enabled {
 				m.flashMsg = reason
 				return m, nil
 			}
+			if a.ID == "commands.open" {
+				m.openCommands()
+				return m, nil
+			}
+			if a.ID == "keyboard.profile" {
+				cmd := m.switchKeyboard()
+				return m, cmd
+			}
 			msg = a.Execute()
+		} else if _, old := actionForKey(key.String(), m.actionContext()); old {
+			return m, nil
 		}
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && m.state == stateCommands {
+		switch key.String() {
+		case "esc", "ctrl+c":
+			m.state = m.commandReturn
+		case "up":
+			m.commandIndex = max(0, m.commandIndex-1)
+		case "down":
+			m.commandIndex = min(max(0, len(m.commandActions())-1), m.commandIndex+1)
+		case "enter":
+			actions := m.commandActions()
+			if m.commandIndex >= 0 && m.commandIndex < len(actions) {
+				a := actions[m.commandIndex]
+				ctx := m.actionContext()
+				ctx.State = m.commandReturn
+				if enabled, reason := a.Enabled(ctx); !enabled {
+					m.flashMsg = reason
+					return m, nil
+				}
+				m.state = m.commandReturn
+				return m.Update(ActionMsg{a.ID})
+			}
+		}
+		return m, nil
 	}
 	beforeCursor := textState{m.buffer.Text(), m.cursorRow, m.cursorCol}
 	beforeUndo := append([]textState(nil), m.undoStack...)
@@ -550,6 +594,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case keymapResult:
+		if msg.Generation == m.keyboardGeneration {
+			if msg.Err != nil {
+				m.flashMsg = "Keyboard config failed: " + msg.Err.Error()
+			} else {
+				m.keymap = msg.Keymap
+				m.flashMsg = "Keyboard profile: " + msg.Keymap.Profile
+			}
+		}
+		return m, nil
 	case saveResult:
 		cmd := m.receiveSave(msg)
 		return m, cmd
@@ -587,6 +641,10 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		if msg.err != nil {
 			m.flashMsg = "Load failed: " + msg.err.Error()
 			return m, nil
+		}
+		m.keymap = msg.keyboard
+		if msg.keyboardNotice != "" {
+			m.flashMsg = msg.keyboardNotice
 		}
 		m.theme = msg.theme
 		m.notes = msg.notes

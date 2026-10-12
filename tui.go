@@ -27,6 +27,7 @@ const (
 	stateSearch
 	statePipe
 	stateConflict
+	stateCommands
 )
 
 type textState struct {
@@ -37,12 +38,16 @@ type textState struct {
 
 type model struct {
 	EditorDraft
-	draftReady bool
-	sessionSeq uint64
-	store      NoteStore
-	notes      []Note
-	allNotes   []Note
-	index      int
+	keymap             Keymap
+	keyboardGeneration uint64
+	commandReturn      appState
+	commandIndex       int
+	draftReady         bool
+	sessionSeq         uint64
+	store              NoteStore
+	notes              []Note
+	allNotes           []Note
+	index              int
 
 	viewport    viewport.Model
 	fileInput   textinput.Model
@@ -115,9 +120,11 @@ func pushStack(stack []textState, val string, row, col int) []textState {
 }
 
 type initDataMsg struct {
-	err   error
-	theme Theme
-	notes []Note
+	keyboard       Keymap
+	keyboardNotice string
+	err            error
+	theme          Theme
+	notes          []Note
 }
 
 func initialModel(db *sql.DB, startTime time.Time) model {
@@ -165,6 +172,7 @@ func (m model) Init() tea.Cmd {
 	store := m.store
 	loadDataCmd := func() tea.Msg {
 		theme := loadTheme()
+		keyboard, notice := loadKeymap()
 		notes, err := store.ListChecked(false)
 		if err != nil {
 			return initDataMsg{err: err}
@@ -180,7 +188,7 @@ func (m model) Init() tea.Cmd {
 			notes[0] = fresh
 		}
 
-		return initDataMsg{theme: theme, notes: notes}
+		return initDataMsg{theme: theme, notes: notes, keyboard: keyboard, keyboardNotice: notice}
 	}
 
 	return tea.Batch(
@@ -228,7 +236,7 @@ func (m *model) generateHelpText() string {
 
 	context := m.actionContext()
 	context.State = stateTyping
-	cheatsheet := actionHelp(context) + "\nSnippets: :today: :time: :now: :uuid:\n" + actionHelp(ActionContext{State: stateTrash, Note: m.Note})
+	cheatsheet := m.actionHelp(context) + "\nSnippets: :today: :time: :now: :uuid:\n" + m.actionHelp(ActionContext{State: stateTrash, Note: m.Note})
 
 	dbPropsText := fmt.Sprintf("%s\nActive Notes : %d\nTrash Bin    : %d", headerStyle.Render("=== DATABASE ==="), m.statActive, m.statTrash)
 
@@ -1137,6 +1145,9 @@ Finalize:
 }
 
 func (m model) View() string {
+	if m.state == stateCommands {
+		return m.commandView()
+	}
 	if !m.draftReady && m.index >= 0 && m.index < len(m.notes) {
 		m.Note = cloneNote(m.notes[m.index])
 	}

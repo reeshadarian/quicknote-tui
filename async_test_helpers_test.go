@@ -23,7 +23,7 @@ func drainTestCmd(t *testing.T, m model, cmd tea.Cmd) model {
 		switch msg := msg.(type) {
 		case tea.BatchMsg:
 			queue = append(queue, msg...)
-		case saveResult, loadResult, searchDebounceMsg, searchResult, highlightMsg, recoveryResult, mutationResult, helpResult, initDataMsg:
+		case keymapResult, saveResult, loadResult, searchDebounceMsg, searchResult, highlightMsg, recoveryResult, mutationResult, helpResult, initDataMsg:
 			next, cmd := m.Update(msg)
 			m = next.(model)
 			queue = append(queue, cmd)

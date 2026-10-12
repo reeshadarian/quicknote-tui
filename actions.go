@@ -103,6 +103,9 @@ func keyMessage(key string) tea.KeyMsg {
 	case "alt+enter":
 		return tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
 	}
+	if strings.HasPrefix(key, "ctrl+") && len(key) == 6 && key[5] >= 'a' && key[5] <= 'z' {
+		return tea.KeyMsg{Type: tea.KeyType(key[5] - 'a' + 1)}
+	}
 	if strings.HasPrefix(key, "alt+") {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(strings.TrimPrefix(key, "alt+")), Alt: true}
 	}
@@ -119,6 +122,10 @@ func makeAction(id, title, description, category string, states []appState, keys
 		return false
 	}
 	a.Enabled = func(c ActionContext) (bool, string) { return true, "" }
+	if len(keys) == 0 {
+		a.Execute = func() tea.Msg { return ActionMsg{id} }
+		return a
+	}
 	canonical := keys[0]
 	a.Execute = func() tea.Msg { return keyMessage(canonical) }
 	return a
@@ -129,6 +136,8 @@ func actionRegistry() []Action {
 	search := []appState{stateSearch}
 	conflict := []appState{stateConflict}
 	a := []Action{
+		makeAction("commands.open", "Commands", "Open the basic command menu (fuzzy palette is QN-023)", "Application", []appState{stateTyping, stateTrash, stateHelp}),
+		makeAction("keyboard.profile", "Switch keyboard profile", "Switch default/legacy profile and save keyboard.json", "Settings", nav),
 		makeAction("note.new", "New note", "Create a titleless scratch draft", "Note", edit, "ctrl+n"),
 		makeAction("note.trash", "Move to Trash", "Keep a persisted note recoverable for 72 hours", "Note", edit, "ctrl+d"),
 		makeAction("note.ghost", "Toggle ghost mode", "Change memory-only mode; persisted conversion needs confirmation", "Note", edit, "ctrl+g"),
@@ -215,7 +224,7 @@ func actionForKey(key string, c ActionContext) (Action, bool) {
 	}
 	return Action{}, false
 }
-func actionHelp(c ActionContext) string {
+func (m model) actionHelp(c ActionContext) string {
 	var b strings.Builder
 	category := ""
 	for _, a := range actionRegistry() {
@@ -231,7 +240,7 @@ func actionHelp(c ActionContext) string {
 		if !enabled {
 			suffix = " — disabled: " + reason
 		}
-		fmt.Fprintf(&b, "%s  %s%s\n", strings.Join(a.DefaultKeys, " / "), a.Title, suffix)
+		fmt.Fprintf(&b, "%s  %s%s\n", strings.Join(m.keyboard().keys(a), " / "), a.Title, suffix)
 	}
 	return b.String()
 }

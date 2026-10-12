@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-014 — DONE; next QN-015
+Current task: QN-015 — DONE; next QN-016
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
@@ -291,6 +291,13 @@ Schema user_version remains 2; only temporary synthetic DBs were used; main unch
 
 ## QN-014 — Central action registry (2026-10-12)
 
-**DONE**, commit QN014_SHA_PENDING. `actions.go`/`actions_test.go` define all existing keyboard actions (notes/navigation/editing/modes/formatting/shell/files/clipboard/search/recovery), stable IDs, titles/descriptions/categories, modal availability, enabled reasons, dangerous flags and executable typed intents. Keyboard and ActionMsg execution use this registry; contextual help is generated from the same definitions instead of a second hardcoded shortcut list. Empty-Trash restore is visibly disabled, and editing intents cannot execute in Trash. Registered Tab indentation now executes the documented four-space insert via EditorBuffer.
+**DONE**, commit f2320f2f916a985add919c9549576aff22717206. `actions.go`/`actions_test.go` define all existing keyboard actions (notes/navigation/editing/modes/formatting/shell/files/clipboard/search/recovery), stable IDs, titles/descriptions/categories, modal availability, enabled reasons, dangerous flags and executable typed intents. Keyboard and ActionMsg execution use this registry; contextual help is generated from the same definitions instead of a second hardcoded shortcut list. Empty-Trash restore is visibly disabled, and editing intents cannot execute in Trash. Registered Tab indentation now executes the documented four-space insert via EditorBuffer.
 
 PASS full suite/race/vet/build and diff/format checks with the same CGO/sqlite_fts5 Go 1.25.9 commands recorded for QN-013 (`go test ... -count=1 ./...`: 10.338s; race: 12.746s). New tests validate unique/complete/executable actions, context gating, typed intent/keyboard routing and generated help. An initially duplicated cursor action ID was detected and fixed. Schema remains 2, temporary fixtures only, main unchanged. Human-operated Fedora tests NOT RUN. Next READY QN-015. Full fuzzy palette/sidebar/TTL features remain assigned to later tasks; the registry does not falsely advertise unimplemented operations.
+
+
+## QN-015 — Versioned configurable keymap (2026-10-12)
+
+**DONE**, commit QN015_SHA_PENDING. `keymap.go`/`keymap_test.go` add validated version-1 keyboard.json, default/legacy profiles, atomic configuration persistence and safe visible fallback. Default Ctrl+K opens a basic registry Commands menu; Alt+K deletes a line. Legacy retains Ctrl+K delete-line and offers Alt+P Commands. Custom action-ID bindings replace old bindings and reject unknown/invalid values, typing-character capture and modal/global collisions. Both generated help and menu use actual configured bindings. First launch shows a nonblocking migration notice; a Commands action toggles and persists profiles. A full fuzzy palette remains QN-023. `docs/KEYBOARD.md` documents configuration, aliases and terminal/tmux limitations.
+
+PASS full suite/race/vet/build/diff checks with Go 1.25.9, CGO, sqlite_fts5; commands match QN-013. T-16 regressions cover default/legacy Ctrl+K, Alt+K, generated help, remapping, collision rejection, migration notice, malformed config fallback, persistence, and keyboard-only menu dispatch/cancel. Existing QN-011–014 tests pass. Schema stays 2, synthetic fixtures only, main unchanged. Manual Fedora/tmux key interception NOT RUN. Next READY QN-016 (013 dependency satisfied).
