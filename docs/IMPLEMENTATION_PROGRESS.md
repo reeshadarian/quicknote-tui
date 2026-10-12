@@ -210,7 +210,7 @@ No QN-011 blocker remains. Saving is still synchronous and can wait for the SQLi
 
 The requested task was already implemented in `595dd7da34d47852b511349e4750f11862c3d161`; this session began at `3340980c9e8b56f10d4b140abc2d218abd56df53`. Read all governing documents, including the complete specification, and reviewed the actual CAS storage, CLI, TUI recovery and regression code. QN-011 remains **DONE**. No production rewrite or QN-012 work was performed.
 
-**Changes:** `cas_test.go` adds simultaneous content-versus-pin/expiration/trash writes through two independent SQLite connections, asserting exactly one winner and one revision increment, winner content/tags/FTS, and no losing metadata update. A second test runs two recovery-copy saves concurrently, checking distinct IDs, revision 1, both draft payloads/tags recoverable, and the original unchanged. This commit also updates this living ledger; a subsequent documentation record supplies the published supplement SHA.
+**Changes:** `cas_test.go` adds simultaneous content-versus-pin/expiration/trash writes through two independent SQLite connections, asserting exactly one winner and one revision increment, winner content/tags/FTS, and no losing metadata update. A second test runs two recovery-copy saves concurrently, checking distinct IDs, revision 1, both draft payloads/tags recoverable, and the original unchanged. Regression and verification supplement commit: `7b41a3e1ce960be91455688df97ef234c577e2ec` (includes this living ledger).
 
 **Verification executed here (Linux amd64, Go 1.25.9, CGO enabled):**
 
