@@ -47,7 +47,7 @@ Not verified: human-operated Fedora/Zsh/Kitty/tmux/clipboard matrix, remote GitH
 
 ## Completed QN-048; next READY: QN-028 — Durable TTL engine
 
-QN-048 is DONE in the implementation commit containing this handoff; the ledger publication follow-up records its exact SHA. `engine.go` and `compatibility_test.go` now cover T-35 math/code/snippets, Markdown/undo, headings/highlighting, units/dates and save identity. `:date:` aliases `:today:`. Malformed unary calls, negative/fractional/overflow factorials, NaN/Inf and equality text remain unchanged instead of crashing or inserting invalid values. All existing valid formats and shortcuts are preserved.
+QN-048 is DONE in implementation commit `801f50262696b9be9e68b2a991b3b96000981b69`. `engine.go` and `compatibility_test.go` now cover T-35 math/code/snippets, Markdown/undo, headings/highlighting, units/dates and save identity. `:date:` aliases `:today:`. Malformed unary calls, negative/fractional/overflow factorials, NaN/Inf and equality text remain unchanged instead of crashing or inserting invalid values. All existing valid formats and shortcuts are preserved.
 
 This session passed full tests/race/vet/build, twenty T-35 repetitions, bounded Unicode fuzz (21,229 executions), and built-binary scripted PTY calculation/date expansion/four-size/quiet CLI/SQLite integrity checks with Go 1.26.8-X:nodwarf5, CGO and sqlite_fts5. Human Fedora/tmux/clipboard, remote CI and release benchmarks were NOT RUN. Only synthetic temporary data was used; schema remains 2, main unchanged. See the living ledger for exact commands and corrected initial failures.
 

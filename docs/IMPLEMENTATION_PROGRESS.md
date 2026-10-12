@@ -1,7 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: a6141abfef965a0e3eacd1cc3e5bb1c03eb1f34b
+Latest implementation SHA: 801f50262696b9be9e68b2a991b3b96000981b69
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-048 DONE; next READY QN-028
 Updated: 2026-10-12 UTC
@@ -344,7 +344,7 @@ Each was published directly to dev/v2 through the connected GitHub API using an 
 
 ## QN-048 — Preserve math/code/snippets (2026-10-12)
 
-**DONE on dev/v2**, implementation commit is the commit containing this entry (exact SHA recorded in the publication follow-up). Starting HEAD and GitHub dev/v2 head both `8080e1f0c53ac036a409ee8ffba9aaf02fa72c13`. Selected only the user-requested QN-048; dependencies QN-004/013 are complete. Read all governing documents and inspected current code. Pre-existing untracked `.config/`, `.local/`, `vim_profile.log` were left untouched.
+**DONE on dev/v2**, implementation commit: `801f50262696b9be9e68b2a991b3b96000981b69`. Starting HEAD and GitHub dev/v2 head both `8080e1f0c53ac036a409ee8ffba9aaf02fa72c13`. Selected only the user-requested QN-048; dependencies QN-004/013 are complete. Read all governing documents and inspected current code. Pre-existing untracked `.config/`, `.local/`, `vim_profile.log` were left untouched.
 
 **Changed files:** `engine.go`, new `compatibility_test.go`, this ledger, `docs/SESSION_HANDOFF.md`.
 
@@ -370,3 +370,7 @@ Each was published directly to dev/v2 through the connected GitHub API using an 
 **Data/risks:** schema stays user_version 2; no schema/retention/keymap/CLI changes or production DB/backup/migration operations. Stable identities, CAS, dirty/history and async generations remain covered by existing full/race suites. Legacy unit/date syntax is preserved; dimensional conversion validation and broader date-parser redesign are outside this compatibility task. main remains `d3e5a119cdf12ec99fcc14a62545f60729adea54` locally and on GitHub. No implementation blocker remains.
 
 **Next READY:** QN-028 durable TTL engine (QN-010/011/012 complete), followed by dependent lifecycle tasks. Permanent Trash deletion remains QN-032; no unrelated feature was implemented.
+
+QN-048 published implementation SHA: `801f50262696b9be9e68b2a991b3b96000981b69`. This documentation-only follow-up resolves the commit placeholder; no Go changes after the final test results above.
+
+Publication: direct HTTPS push failed because askpass credentials were unavailable. The connected GitHub app published `801f50262696b9be9e68b2a991b3b96000981b69` to dev/v2 with expected head 8080e1f. Its tree `f225fe2f3ed5fd543509ca9b60e18e9fdd9a37f8` exactly matches tested local implementation commit `3645ccce099ef453142fffc49334bb49c0da6956`. The documentation follow-up records the published SHA. Only dev/v2 was updated; main was never written or merged.
