@@ -1,7 +1,7 @@
 # Quicknote v2 — Self-Contained Engineering Specification
 
 **Spec ID:** QN-V2  
-**Version:** 1.0.0  
+**Version:** 1.1.0
 **Prepared:** 2026-10-11  
 **Project:** [reeshadarian/quicknote-tui](https://github.com/reeshadarian/quicknote-tui)  
 **Reference branch:** `main`, as publicly inspected 2026-10-11; **commit SHA was not verified**.  
@@ -13,6 +13,18 @@
 > Quicknote is an *ephemeral terminal scratchpad*, not a permanent knowledge-management platform. Preserve its speed, plain-text interoperability, and keyboard orientation while making it safer, more discoverable, mouse-friendly, visually polished, and easy to maintain.
 
 ---
+
+## Approved amendment — 2026-10-12, v1.1.0
+
+The maintainer approved the M2 lifecycle design and execution plan. The following versioned rules supersede conflicting historical text below; QN-028 introduces the foundation and QN-029–032 supply their UI.
+
+
+1. Keep the historical v2 migration contract and task evidence. Add a transactional **database v3** migration for lifecycle metadata; never add fields to deployed v2 without increasing `user_version`.
+2. Add `expiration_source TEXT NOT NULL DEFAULT 'none'` (values `none`, `directive`, `preset`), `expiration_needs_review INTEGER NOT NULL DEFAULT 0` (0/1), and `delete_reason TEXT NOT NULL DEFAULT ''` (empty for active/unknown legacy reason, `manual`/`expired` for new deletions). Reuse `kill_hash` as the observed effective-directive fingerprint; keep `kill_start` for verified legacy import/compatibility, not as an independent countdown authority.
+3. Store new lifecycle/deletion timestamps as UTC **fixed-width millisecond RFC3339**, layout `2006-01-02T15:04:05.000Z`. Parse legacy SQLite timestamp/RFC3339 forms at the boundary. Normalize valid existing `expires_at` strings transactionally to this format before indexed comparisons, rounding upward to avoid early expiry. Preserve malformed expiry text, flag review, and exclude it from automatic expiry. New deadline instants are rounded upward to the next millisecond so rounding cannot cause early expiry. Historical created/updated/deleted timestamp bytes are retained during migration.
+4. For a persisted ghost conversion, default to **duplicate into a new ghost and keep the original**. An optional explicit **move original to Trash and continue as ghost** uses ordinary 72-hour recovery; never hard-delete the original in conversion. Warn that persisted copies/backups may remain. A ghost can become persisted only after explicit confirmation.
+5. Clarify INV-11: ghost content has no automatic persistence, indexing, copying, logging, backups or external export. Explicit user-requested export/copy may occur only after a warning and confirmation that content leaves memory-only mode. The internal ghost remains unpersisted. Existing shell filtering is explicit and must not log ghost content; no security guarantee about shell programs, terminal history or OS memory is implied.
+6. Delete any persisted active note, including an empty one, through normal recoverable Trash. Permanent deletion from the Trash interface checks both revision and trashed state. The general legacy `PurgeCAS` adapter remains available to existing internal callers, but UI lifecycle actions never invoke it on an active original.
 
 ## 0. How to use this specification across independent coding sessions
 

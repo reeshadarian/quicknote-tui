@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 var (
@@ -29,6 +28,7 @@ func (e *ConflictError) Unwrap() error { return ErrConflict }
 // Get remains a compatibility content-only reader. Editors use GetNote so
 // content and its base revision always come from one SQLite snapshot.
 type NoteStore interface {
+	LifecycleStore
 	Get(int) (string, error)
 	GetNote(int) (Note, error)
 	List(bool) []Note
@@ -46,29 +46,36 @@ type NoteStore interface {
 	PurgeCAS(int, int64) error
 }
 
-type SQLiteStore struct{ db *sql.DB }
+type SQLiteStore struct {
+	db    *sql.DB
+	clock Clock
+}
 
-func NewSQLiteStore(db *sql.DB) *SQLiteStore      { return &SQLiteStore{db: db} }
+func NewSQLiteStore(db *sql.DB) *SQLiteStore      { return NewSQLiteStoreWithClock(db, RealClock{}) }
 func (s *SQLiteStore) Get(id int) (string, error) { n, err := s.GetNote(id); return n.Content, err }
-func (s *SQLiteStore) GetNote(id int) (Note, error) {
+func NewSQLiteStoreWithClock(db *sql.DB, clock Clock) *SQLiteStore {
+	return &SQLiteStore{db: db, clock: clockOrReal(clock)}
+}
+func (s *SQLiteStore) GetNote(id int) (Note, error) { return getNoteSnapshot(s.db, id) }
+
+type noteQuerier interface{ QueryRow(string, ...any) *sql.Row }
+
+func getNoteSnapshot(q noteQuerier, id int) (Note, error) {
 	var n Note
 	var updated, created, deleted any
 	var hash, start, tags sql.NullString
-	err := s.db.QueryRow(`SELECT id,content,revision,updated_at,created_at,deleted_at,
- kill_hash,kill_start,expires_at,is_pinned,
- (SELECT GROUP_CONCAT(tag) FROM tags WHERE note_id=notes.id) FROM notes WHERE id=?`, id).Scan(
-		&n.ID, &n.Content, &n.Revision, &updated, &created, &deleted, &hash, &start, &n.ExpiresAt, &n.IsPinned, &tags)
+	err := q.QueryRow(`SELECT id,COALESCE(content,''),revision,CAST(updated_at AS TEXT),CAST(created_at AS TEXT),CAST(deleted_at AS TEXT),kill_hash,kill_start,expires_at,is_pinned,expiration_source,expiration_needs_review,delete_reason,(SELECT GROUP_CONCAT(tag) FROM tags WHERE note_id=notes.id) FROM notes WHERE id=?`, id).Scan(&n.ID, &n.Content, &n.Revision, &updated, &created, &deleted, &hash, &start, &n.ExpiresAt, &n.IsPinned, &n.ExpirationSource, &n.ExpirationNeedsReview, &n.DeleteReason, &tags)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Note{}, fmt.Errorf("note %d: %w", id, ErrNotFound)
+		return n, fmt.Errorf("note %d: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return Note{}, err
+		return n, err
 	}
 	n.UpdatedTime, n.UpdatedAt = parseSQLiteTime(updated)
 	n.CreatedTime, n.CreatedAt = parseSQLiteTime(created)
-	n.DeletedTime, n.DeletedAt = parseSQLiteTime(deleted)
+	n.DeletedTime, n.DeletedAt = rawLifecycleTime(deleted)
 	n.KillHash = hash.String
-	n.KillStart, _ = time.Parse(time.RFC3339, start.String)
+	n.KillStart, _ = ParseLifecycleTime(start.String)
 	if tags.Valid && tags.String != "" {
 		n.Tags = strings.Split(tags.String, ",")
 	}
@@ -76,13 +83,15 @@ func (s *SQLiteStore) GetNote(id int) (Note, error) {
 }
 func (s *SQLiteStore) List(trash bool) []Note             { return loadNotes(s.db, trash) }
 func (s *SQLiteStore) Search(q string, trash bool) []Note { return searchNotes(s.db, q, trash) }
-func (s *SQLiteStore) Save(n Note) (Note, error)          { return saveNoteChecked(s.db, n) }
+func (s *SQLiteStore) Save(n Note) (Note, error) {
+	return saveNoteSnapshotAt(s.db, n, false, clockOrReal(s.clock).Now())
+}
 
 // SaveCopy is explicit recovery, including an intentionally empty draft.
 // Ordinary autosave still avoids inserting an untouched empty new note.
 func (s *SQLiteStore) SaveCopy(n Note) (Note, error) {
 	n.ID, n.Revision = 0, 0
-	return saveNoteSnapshot(s.db, n, true)
+	return saveNoteSnapshotAt(s.db, n, true, clockOrReal(s.clock).Now())
 }
 
 // Classify zero-row CAS inside the transaction that attempted the write.
@@ -127,20 +136,28 @@ func (s *SQLiteStore) mutateCAS(id int, expected int64, activeOnly bool, query s
 	return tx.Commit()
 }
 func (s *SQLiteStore) TrashCAS(id int, expected int64) error {
-	return s.mutateCAS(id, expected, true, `UPDATE notes SET deleted_at=CURRENT_TIMESTAMP,revision=revision+1
- WHERE id=? AND revision=? AND deleted_at IS NULL`)
+	_, e := s.TrashSnapshotCAS(id, expected, DeleteManual, clockOrReal(s.clock).Now())
+	return e
 }
 func (s *SQLiteStore) RestoreCAS(id int, expected int64) error {
-	return s.mutateCAS(id, expected, false, `UPDATE notes SET deleted_at=NULL,updated_at=CURRENT_TIMESTAMP,
- kill_start=CURRENT_TIMESTAMP,revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NOT NULL`)
+	_, e := s.RestoreSnapshotCAS(id, expected, RestoreWithoutTimer, clockOrReal(s.clock).Now())
+	return e
 }
 func (s *SQLiteStore) SetPinnedCAS(id int, expected int64, pinned bool) error {
-	return s.mutateCAS(id, expected, true, `UPDATE notes SET is_pinned=?,revision=revision+1,
- updated_at=CURRENT_TIMESTAMP WHERE id=? AND revision=? AND deleted_at IS NULL`, pinned)
+	_, e := s.ApplyPinnedCAS(id, expected, pinned, clockOrReal(s.clock).Now())
+	return e
 }
 func (s *SQLiteStore) SetExpirationCAS(id int, expected int64, at sql.NullString) error {
-	return s.mutateCAS(id, expected, true, `UPDATE notes SET expires_at=?,revision=revision+1,
- updated_at=CURRENT_TIMESTAMP WHERE id=? AND revision=? AND deleted_at IS NULL`, at)
+	c := ExpirationChoice{Source: ExpirationPreset}
+	if at.Valid {
+		t, e := ParseLifecycleTime(at.String)
+		if e != nil {
+			return e
+		}
+		c.Deadline = &t
+	}
+	_, e := s.ApplyExpirationCAS(id, expected, c, clockOrReal(s.clock).Now())
+	return e
 }
 func (s *SQLiteStore) PurgeCAS(id int, expected int64) error {
 	tx, err := s.db.Begin()

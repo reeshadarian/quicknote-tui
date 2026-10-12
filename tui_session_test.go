@@ -13,6 +13,8 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	a := insertTestNote(t, db, "alpha")
 	b := insertTestNote(t, db, "beta")
 	m := initialModel(db, nowForTest())
+	// Keep navigation order fixed while exercising histories; lifecycle writes now use millisecond precision.
+	m.store = NewSQLiteStoreWithClock(db, fixedClock{nowForTest()})
 	m.notes = []Note{mustGetTestNote(t, db, a), mustGetTestNote(t, db, b)}
 	m.index = 0
 	m.buffer = stringToBuffer("alpha revised")

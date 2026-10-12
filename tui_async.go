@@ -25,15 +25,14 @@ type saveResult struct {
 	Err     error
 }
 type loadRequest struct {
-	SourceKey        int
-	Generation       uint64
-	SourceID         int
-	SourceVersion    uint64
-	TargetID         int
-	Trash            bool
-	Reload           bool
-	Match            *Note
-	ResetLegacyTimer bool
+	SourceKey     int
+	Generation    uint64
+	SourceID      int
+	SourceVersion uint64
+	TargetID      int
+	Trash         bool
+	Reload        bool
+	Match         *Note
 }
 type loadResult struct {
 	Request loadRequest
@@ -101,6 +100,9 @@ func (m *model) requestSave() tea.Cmd {
 		m.saveErr = nil
 		return nil
 	}
+	if _, pending := m.lifecycleRequests[noteKey(n)]; pending {
+		return nil
+	}
 	if _, pending := m.saves[noteKey(n)]; pending {
 		return nil
 	}
@@ -133,6 +135,7 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		return nil
 	}
 	if msg.Err != nil {
+		delete(m.lifecycleQueued, r.Key)
 		d.needsSave, d.saveErr = true, msg.Err
 		m.drafts[r.Key] = d
 		if active {
@@ -145,16 +148,14 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 	}
 	// A successful CAS advances the base even when later edits remain dirty.
 	// Never install the response's older content over the live editor.
-	localBase := d.Note
-	d.Note = cloneNote(msg.Note)
-	if d.localVersion != r.LocalVersion {
-		d.Note.KillHash = localBase.KillHash
-		d.Note.KillStart = localBase.KillStart
-		d.Note.ExpiresAt = localBase.ExpiresAt
-		d.Note.IsPinned = localBase.IsPinned
+	if d.Note.Revision <= msg.Note.Revision {
+		d.Note = cloneNote(msg.Note)
 	}
 	d.needsSave = d.localVersion != r.LocalVersion || d.buffer.Text() != r.Snapshot.Content
 	d.saveErr = nil
+	if d.Note.DeletedAt != "" && d.needsSave {
+		d.saveErr = ErrTrashed
+	}
 	delete(m.drafts, r.Key)
 	m.drafts[msg.Note.ID] = d
 	for i := range m.notes {
@@ -167,11 +168,23 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 			m.allNotes[i] = cloneNote(d.Note)
 		}
 	}
+	if d.Note.DeletedAt != "" {
+		delete(m.lifecycleQueued, r.Key)
+		if active {
+			m.needsSave, m.saveErr = d.needsSave, d.saveErr
+			m.pendingAction = nil
+			m.installLifecycleDraft(msg.Note.ID, d)
+		}
+		return nil
+	}
 	if active {
 		m.Note = cloneNote(d.Note)
 		m.needsSave, m.saveErr = d.needsSave, nil
 		if d.needsSave {
 			return m.requestSave()
+		}
+		if intent, ok := m.lifecycleQueued[r.Key]; ok {
+			return m.startLifecycle(msg.Note.ID, d, intent)
 		}
 		m.flashMsg = "Saved"
 		if m.pendingAction != nil && m.pendingActionID == r.Key {
@@ -186,6 +199,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		n := cloneNote(d.Note)
 		n.Content = d.buffer.Text()
 		return m.saveSnapshot(n, d.localVersion)
+	}
+	if intent, ok := m.lifecycleQueued[r.Key]; ok {
+		return m.startLifecycle(msg.Note.ID, d, intent)
 	}
 	return m.finishExit()
 }
@@ -273,9 +289,6 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 			m.index = i
 			break
 		}
-	}
-	if r.ResetLegacyTimer {
-		msg.Note.KillStart = time.Now()
 	}
 	m.notes[m.index] = msg.Note
 	m.activateNote() // Pure installation; I/O has already completed.
@@ -629,6 +642,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case maintenanceResult:
+		cmd := m.receiveMaintenance(msg)
+		return m, cmd
+	case lifecycleResult:
+		cmd := m.receiveLifecycle(msg)
+		return m, cmd
 	case exportCheckResult:
 		cmd := m.receiveExportCheck(msg)
 		return m, cmd
@@ -676,6 +695,8 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case initDataMsg:
+		m.startupPending = false
+		m.reconcileMaintenance(msg.maintenance)
 		if m.keyboardGeneration == 0 && msg.keyboard.Version != 0 {
 			m.keymap = msg.keyboard
 			if msg.keyboardNotice != "" {
@@ -686,11 +707,11 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			m.theme = msg.theme
 			m.highlightDirty = true
 		}
-		if m.openGeneration != 0 || m.localVersion != 0 || m.buffer.Text() != "" {
-			return m, nil
-		}
 		if msg.err != nil {
 			m.showError("Load failed", msg.err)
+			return m, nil
+		}
+		if m.openGeneration != 0 || m.localVersion != 0 || m.buffer.Text() != "" {
 			return m, nil
 		}
 		m.notes = msg.notes
@@ -772,7 +793,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		delete(m.drafts, msg.NoteID)
 		if msg.Kind == "restore" {
 			load := m.requestOpen(msg.NoteID, false, nil, false)
-			return m, func() tea.Msg { result := load().(loadResult); result.Request.ResetLegacyTimer = true; return result }
+			return m, load
 		}
 		cmd := m.requestOpen(-1, false, nil, false)
 		return m, cmd
@@ -789,25 +810,12 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case tickMsg:
 		m.timerNow = time.Time(msg)
+		maintenance := m.requestMaintenance()
 		var save tea.Cmd
-		if m.state == stateTyping && m.saveErr == nil {
-			if m.activeID() >= 0 {
-				hash, duration := getKillTimerInfo(bufferToString(m.buffer))
-				if m.Note.KillHash != hash {
-					m.Note.KillHash = hash
-					m.Note.KillStart = time.Time(msg)
-					m.versionSeq++
-					m.localVersion = m.versionSeq
-					m.needsSave = true
-				}
-				if duration != nil && time.Time(msg).After(m.Note.KillStart.Add(*duration)) && !m.actionPending {
-					save = m.afterSave(tea.KeyMsg{Type: tea.KeyCtrlD})
-				} else if m.needsSave && time.Since(m.lastActivity) > 2*time.Second {
-					save = m.requestSave()
-				}
-			}
+		if m.state == stateTyping && m.saveErr == nil && m.needsSave && time.Since(m.lastActivity) > 2*time.Second {
+			save = m.requestSave()
 		}
-		return m, tea.Batch(tickCmd(), save)
+		return m, tea.Batch(tickCmd(), maintenance, save)
 	case tea.KeyMsg:
 		m.lastActivity = time.Now()
 		key := msg.String()
@@ -970,7 +978,7 @@ func (m model) exitPending() bool {
 // Quit waits for every outstanding draft, including notes no longer active.
 // A failed inactive save reopens its retained session for explicit recovery.
 func (m *model) finishExit() tea.Cmd {
-	if !m.exitPending() || len(m.saves) > 0 {
+	if !m.exitPending() || len(m.saves) > 0 || len(m.lifecycleRequests) > 0 {
 		return nil
 	}
 	m.stashNote()

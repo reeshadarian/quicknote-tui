@@ -685,7 +685,7 @@ func TestQN012RecoveredCopyAllowsExitButFurtherEditDoesNot(t *testing.T) {
 	}
 }
 
-func TestQN012AsyncRestorePreservesLegacyTimerReset(t *testing.T) {
+func TestQN012AsyncRestoreDoesNotResetDeadline(t *testing.T) {
 	m, a, _, _, _ := asyncModel(t)
 	content := "#kill 1 hour\nrestore this"
 	hash, _ := getKillTimerInfo(content)
@@ -705,8 +705,8 @@ func TestQN012AsyncRestorePreservesLegacyTimerReset(t *testing.T) {
 	m.activateNote()
 	m.state = stateTrash
 	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
-	if m.activeID() != n.ID || m.state != stateTyping || time.Since(m.notes[m.index].KillStart) > time.Second {
-		t.Fatal("restored wrong note or lost legacy timer reset")
+	if m.activeID() != n.ID || m.state != stateTyping || m.Note.ExpiresAt.Valid {
+		t.Fatal("restored wrong note or rearmed deadline")
 	}
 	m = updateTest(t, m, tickMsg(time.Now()))
 	stored, err := a.GetNote(n.ID)

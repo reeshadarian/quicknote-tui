@@ -1,6 +1,6 @@
 # M2 lifecycle design and proposed specification amendment
 
-Status: DRAFT for maintainer review. Planning only; no product code or database changes.
+Status: APPROVED by maintainer for M2 execution, 2026-10-12. Master specification amended to v1.1.0 by QN-028.
 Baseline: `0778085c5815d56a439550ccd9e898fa79935dc1`, `dev/v2`, inspected 2026-10-12.
 Authority: `docs/QUICKNOTE_V2_SPEC.md` v1.0.0, §§3–5, 7–8, 10, 12, 14 (QN-028–032).
 Execution plan: `../plans/2026-10-12-m2-lifecycle.md`.
@@ -19,7 +19,7 @@ The specification requests pinning sidebar support before the sidebar's own QN-0
 
 INV-11 says ghost content never deliberately touches clipboard/backups, while §4.4 explicitly permits a warned ghost export. The proposal below clarifies this conflict instead of silently choosing a rule.
 
-## Proposed QN-V2 v1.1.0 amendment (not yet applied to the master spec)
+## Approved QN-V2 v1.1.0 amendment
 
 1. Keep the historical v2 migration contract and task evidence. Add a transactional **database v3** migration for lifecycle metadata; never add fields to deployed v2 without increasing `user_version`.
 2. Add `expiration_source TEXT NOT NULL DEFAULT 'none'` (values `none`, `directive`, `preset`), `expiration_needs_review INTEGER NOT NULL DEFAULT 0` (0/1), and `delete_reason TEXT NOT NULL DEFAULT ''` (empty for active/unknown legacy reason, `manual`/`expired` for new deletions). Reuse `kill_hash` as the observed effective-directive fingerprint; keep `kill_start` for verified legacy import/compatibility, not as an independent countdown authority.

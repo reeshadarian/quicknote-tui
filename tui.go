@@ -36,10 +36,17 @@ type textState struct {
 }
 
 type model struct {
-	overlays         []OverlayFrame
-	confirmation     Confirmation
-	exportGeneration uint64
-	windowHeight     int
+	startupPending        bool
+	clock                 Clock
+	maintenancePending    bool
+	maintenanceGeneration uint64
+	lastMaintenance       time.Time
+	lifecycleRequests     map[int]lifecycleRequest
+	lifecycleQueued       map[int]lifecycleIntent
+	overlays              []OverlayFrame
+	confirmation          Confirmation
+	exportGeneration      uint64
+	windowHeight          int
 	EditorDraft
 	keymap             Keymap
 	keyboardGeneration uint64
@@ -123,6 +130,7 @@ func pushStack(stack []textState, val string, row, col int) []textState {
 }
 
 type initDataMsg struct {
+	maintenance    MaintenanceResult
 	keyboard       Keymap
 	keyboardNotice string
 	err            error
@@ -143,6 +151,7 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 
 	// Instantly return the model without touching the disk or database
 	m := model{
+		startupPending: true,
 		EditorDraft: EditorDraft{buffer: stringToBuffer(""),
 			cursorRow:      0,
 			cursorCol:      0,
@@ -173,12 +182,17 @@ func initialModel(db *sql.DB, startTime time.Time) model {
 func (m model) Init() tea.Cmd {
 	// Capture the store independently of the model for background I/O.
 	store := m.store
+	clock := clockOrReal(m.clock)
 	loadDataCmd := func() tea.Msg {
 		theme := loadTheme()
 		keyboard, notice := loadKeymap()
+		maintenance, err := store.Maintain(clock.Now(), nil)
+		if err != nil {
+			return initDataMsg{maintenance: maintenance, err: err}
+		}
 		notes, err := store.ListChecked(false)
 		if err != nil {
-			return initDataMsg{err: err}
+			return initDataMsg{maintenance: maintenance, err: err}
 		}
 
 		if len(notes) == 0 {
@@ -186,12 +200,12 @@ func (m model) Init() tea.Cmd {
 		} else if notes[0].ID > 0 {
 			fresh, err := store.GetNote(notes[0].ID)
 			if err != nil {
-				return initDataMsg{err: err}
+				return initDataMsg{maintenance: maintenance, err: err}
 			}
 			notes[0] = fresh
 		}
 
-		return initDataMsg{theme: theme, notes: notes, keyboard: keyboard, keyboardNotice: notice}
+		return initDataMsg{maintenance: maintenance, theme: theme, notes: notes, keyboard: keyboard, keyboardNotice: notice}
 	}
 
 	return tea.Batch(
@@ -1039,12 +1053,15 @@ func (m model) View() string {
 		return clipFrame(editor, l.Width, 1)
 	}
 	status := fmt.Sprintf("[%s] Ln %d Col %d · %s Commands", m.saveStatus(), m.cursorRow+1, m.cursorCol+1, m.shortcut("commands.open"))
-	if _, duration := getKillTimerInfo(m.buffer.Text()); duration != nil && !m.Note.KillStart.IsZero() && m.state != stateTrash {
-		remaining := m.Note.KillStart.Add(*duration).Sub(m.timerNow)
-		if remaining > 0 {
-			status = "Expires in " + formatKillTime(remaining) + " · " + status
+	if m.Note.ExpiresAt.Valid && !m.Note.IsGhost && !m.Note.IsPinned && m.state != stateTrash {
+		if deadline, err := ParseLifecycleTime(m.Note.ExpiresAt.String); err == nil {
+			status = "Expires in " + formatKillTime(deadline.Sub(m.timerNow)) + " · " + status
 		}
 	}
+	if m.Note.ExpirationNeedsReview {
+		status = "Expiration needs review · " + status
+	}
+
 	if m.state == stateTrash {
 		status = "Trash · Ctrl+R Restore · Esc Back"
 	}
