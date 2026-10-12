@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: `15dfba9cc8145eee51782d5f3c1b7463f81ec74b`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-013 — DONE; next QN-014 (user requested QN-013–017)
+Current task: QN-014 — DONE; next QN-015
 Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
@@ -278,7 +278,7 @@ No QN-012 blocker remains. **QN-013 is next READY**: explicit EditorDraft/author
 
 ## QN-013 — Explicit EditorDraft and authoritative identity (2026-10-12)
 
-**DONE**, implementation commit: QN013_SHA_PENDING. Starting HEAD `211ec0b8a1fca0e44873ba287b06b167c8985168`. The user authorized QN-013 through QN-017; this is the first independently testable step.
+**DONE**, implementation commit: 7cb44decf4155a19edf40ea77c4e7adb620b93c3. Starting HEAD `211ec0b8a1fca0e44873ba287b06b167c8985168`. The user authorized QN-013 through QN-017; this is the first independently testable step.
 
 `draft.go`/`draft_test.go` introduce EditorDraft ownership of Note/base revision, EditorBuffer, history, dirty/error/version, cursor/viewport, and copy-recovery state. Stable in-memory session keys separate ID-zero/ghost drafts; async save/load/highlight requests identify the draft as well as persisted ID. List indices only navigate summaries and cannot redirect writes after reorder. Deep draft snapshots isolate buffers/history/viewport. Source maps expose byte/rune/grapheme/cell positions; buffer insert/delete/split/join/replace preserve graphemes. Typing history groups bursts, clears redo on new edits and has configurable transaction/byte bounds.
 
@@ -287,3 +287,10 @@ No QN-012 blocker remains. **QN-013 is next READY**: explicit EditorDraft/author
 PASS baseline/full suite, full race, vet, build and diff/format checks with Go 1.25.9, CGO and sqlite_fts5. Commands: `go test -tags sqlite_fts5 -count=1 ./...`, `go test -tags sqlite_fts5 -race -count=1 ./...`, `go vet -tags sqlite_fts5 ./...`, `go build -tags sqlite_fts5 -o /workspace/scratch/bf7235c166cf/quicknote-m1 .` using `/workspace/scratch/bf7235c166cf/go/bin/go`. T-01–04/T-17 and QN-012 tests run in those suites; added reorder/ghost identity, exact text, grouped/bounded undo and source-map/buffer operation tests. Initial compilation failures from old private session field names and metadata fixtures were corrected. No final failure. Human Fedora interaction NOT RUN at this step; Unicode cell layout is integrated further in QN-016.
 
 Schema user_version remains 2; only temporary synthetic DBs were used; main unchanged. Next READY: QN-014. QN-048 remains outside the user-selected QN-013–017 scope.
+
+
+## QN-014 — Central action registry (2026-10-12)
+
+**DONE**, commit QN014_SHA_PENDING. `actions.go`/`actions_test.go` define all existing keyboard actions (notes/navigation/editing/modes/formatting/shell/files/clipboard/search/recovery), stable IDs, titles/descriptions/categories, modal availability, enabled reasons, dangerous flags and executable typed intents. Keyboard and ActionMsg execution use this registry; contextual help is generated from the same definitions instead of a second hardcoded shortcut list. Empty-Trash restore is visibly disabled, and editing intents cannot execute in Trash. Registered Tab indentation now executes the documented four-space insert via EditorBuffer.
+
+PASS full suite/race/vet/build and diff/format checks with the same CGO/sqlite_fts5 Go 1.25.9 commands recorded for QN-013 (`go test ... -count=1 ./...`: 10.338s; race: 12.746s). New tests validate unique/complete/executable actions, context gating, typed intent/keyboard routing and generated help. An initially duplicated cursor action ID was detected and fixed. Schema remains 2, temporary fixtures only, main unchanged. Human-operated Fedora tests NOT RUN. Next READY QN-015. Full fuzzy palette/sidebar/TTL features remain assigned to later tasks; the registry does not falsely advertise unimplemented operations.

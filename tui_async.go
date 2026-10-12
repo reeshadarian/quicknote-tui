@@ -497,6 +497,27 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.bindDraft()
+	if intent, ok := msg.(ActionMsg); ok {
+		a, found := findAction(intent.ID)
+		if !found || !a.Available(m.actionContext()) {
+			m.flashMsg = "Action unavailable"
+			return m, nil
+		}
+		if enabled, reason := a.Enabled(m.actionContext()); !enabled {
+			m.flashMsg = reason
+			return m, nil
+		}
+		msg = a.Execute()
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if a, found := actionForKey(key.String(), m.actionContext()); found {
+			if enabled, reason := a.Enabled(m.actionContext()); !enabled {
+				m.flashMsg = reason
+				return m, nil
+			}
+			msg = a.Execute()
+		}
+	}
 	beforeCursor := textState{m.buffer.Text(), m.cursorRow, m.cursorCol}
 	beforeUndo := append([]textState(nil), m.undoStack...)
 	beforeRedo := append([]textState(nil), m.redoStack...)

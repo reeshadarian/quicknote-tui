@@ -226,40 +226,9 @@ func (m *model) generateHelpText() string {
 	}
 	docPropsText := fmt.Sprintf("%s\n%s", headerStyle.Render("=== CURRENT DOCUMENT ==="), docProps)
 
-	cheatsheet := fmt.Sprintf(`
-%s
-Alt+Left/Right  : Switch Notes
-Ctrl+Left/Right : Word Jump
-Ctrl+U         : Promote current note to the front
-Ctrl+N         : Create New Note
-Ctrl+D         : Delete Current Note
-Ctrl+S         : Save note to .md file
-Alt+C          : Copy entire note to clipboard
-Ctrl+T         : Open Trash Bin
-Ctrl+F         : Find / Search Notes
-F1             : Toggle Help
-
-%s
-Alt+M          : Toggle Math Mode ('code:' keyword disables lists)
-Alt+V          : Toggle Code Mode
-//             : Line comments (ignored by Math, Lists, and Expansions)
-Ctrl+B / Alt+I : Bold (****) / Italic (**) 
-`+"\x60 (1x / 3x)    : Auto-pair inline code / create multiline code block"+`
-Ctrl+X         : Toggle Checkbox / Toggle Strikethrough
-Ctrl+O/Alt+Ent : Smart open line below
-Ctrl+K         : Delete Entire Line
-Ctrl+Z/Alt+Z   : Undo  |  Ctrl+Y/Alt+Y : Redo
-Tab / Shft+Tab : Indent / Un-indent line (4 spaces)
-=              : Execute Math on line
-
-%s
-:today:        : e.g., 17 Apr 2026
-:time:         : e.g., 3:04PM
-:now:          : e.g., 3:04PM 17 Apr 2026
-:uuid:         : e.g., 550e8400-e29b-41d4-a716-446655440000`,
-		headerStyle.Render("=== GLOBAL NAVIGATION ==="),
-		headerStyle.Render("=== EDITOR & MODES ==="),
-		headerStyle.Render("=== MAGIC KEYWORDS ==="))
+	context := m.actionContext()
+	context.State = stateTyping
+	cheatsheet := actionHelp(context) + "\nSnippets: :today: :time: :now: :uuid:\n" + actionHelp(ActionContext{State: stateTrash, Note: m.Note})
 
 	dbPropsText := fmt.Sprintf("%s\nActive Notes : %d\nTrash Bin    : %d", headerStyle.Render("=== DATABASE ==="), m.statActive, m.statTrash)
 
@@ -880,6 +849,10 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.buffer[m.cursorRow] = append(m.buffer[m.cursorRow][:m.cursorCol], append([]rune{' '}, m.buffer[m.cursorRow][m.cursorCol:]...)...)
 			m.cursorCol++
 
+		case "tab":
+			var cursor BufferCursor
+			m.buffer, cursor = m.buffer.Insert(BufferCursor{m.cursorRow, m.cursorCol}, "    ")
+			m.cursorRow, m.cursorCol = cursor.Row, cursor.Col
 		case "shift+tab":
 			line := m.buffer[m.cursorRow]
 			spaces := 0
