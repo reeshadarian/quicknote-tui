@@ -89,10 +89,10 @@ func (m *model) receiveMaintenance(msg maintenanceResult) tea.Cmd {
 		m.flashMsg = "Maintenance failed: " + msg.Err.Error()
 		return nil
 	}
-	m.reconcileMaintenance(msg.Result)
-	return nil
+	return m.reconcileMaintenance(msg.Result)
 }
-func (m *model) reconcileMaintenance(result MaintenanceResult) {
+func (m *model) reconcileMaintenance(result MaintenanceResult) tea.Cmd {
+	var recovery tea.Cmd
 	m.stashNote()
 	for _, c := range result.Expired {
 		if d, ok := m.drafts[c.ID]; ok && d.Note.Revision < c.Revision {
@@ -101,7 +101,9 @@ func (m *model) reconcileMaintenance(result MaintenanceResult) {
 			d.Note.DeletedTime = c.DeletedAt
 			d.Note.DeleteReason = c.Reason
 			m.drafts[c.ID] = d
-			m.installLifecycleDraft(c.ID, d)
+			if cmd := m.installLifecycleDraft(c.ID, d); cmd != nil {
+				recovery = cmd
+			}
 		}
 		m.markSummaryTrashed(c.ID, c.Revision, c.DeletedAt, c.Reason)
 	}
@@ -111,9 +113,11 @@ func (m *model) reconcileMaintenance(result MaintenanceResult) {
 			m.drafts[id] = d
 			if m.activeID() == id {
 				m.recordSaveError(ErrNotFound)
+				recovery = m.requestConflictRead()
 			}
 		}
 	}
+	return recovery
 }
 func (m *model) markSummaryTrashed(id NoteID, revision int64, at time.Time, reason DeleteReason) {
 	for _, list := range [][]Note{m.notes, m.allNotes, m.searchResults} {
@@ -184,14 +188,15 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 		return lifecycleResult{r, n, e}
 	}
 }
-func (m *model) installLifecycleDraft(key int, d EditorDraft) {
+func (m *model) installLifecycleDraft(key int, d EditorDraft) tea.Cmd {
 	if m.activeKey() != key {
-		return
+		return nil
 	}
 	m.Note = cloneNote(d.Note)
 	if d.Note.DeletedAt != "" {
 		if d.needsSave || d.saveErr != nil {
 			m.recordSaveError(ErrTrashed)
+			return m.requestConflictRead()
 		} else if m.state == stateTyping {
 			m.state = stateTrash
 			m.flashMsg = "Expired: recoverable in Trash"
@@ -216,6 +221,7 @@ func (m *model) installLifecycleDraft(key int, d EditorDraft) {
 			}
 		}
 	}
+	return nil
 }
 func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	r := msg.Request
@@ -240,6 +246,11 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		m.flashMsg = "Lifecycle change failed; draft retained"
 		return nil
 	}
+	// A successful write is acknowledged by removing its request, but a later
+	// observed revision owns the lifecycle state (including an external restore).
+	if known := m.latestLifecycleSnapshot(msg.Note); known.Revision > msg.Note.Revision {
+		return m.finishExit()
+	}
 	// Metadata acknowledgments never replace the draft's buffer or history.
 	d.Note = cloneNote(msg.Note)
 	d.Note.Content = d.buffer.Text()
@@ -249,13 +260,16 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		d.saveErr = ErrTrashed
 	}
 	m.drafts[r.Key] = d
-	m.installLifecycleDraft(r.Key, d)
+	recovery := m.installLifecycleDraft(r.Key, d)
 	for _, list := range [][]Note{m.notes, m.allNotes} {
 		for i := range list {
 			if list[i].ID == r.ID {
 				list[i] = cloneNote(d.Note)
 			}
 		}
+	}
+	if recovery != nil {
+		return recovery
 	}
 	if d.Note.DeletedAt == "" && d.needsSave {
 		if m.activeKey() == r.Key {
@@ -264,4 +278,33 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		return m.saveSnapshot(d.Note, d.localVersion)
 	}
 	return m.finishExit()
+}
+
+// Read results must not erase lifecycle changes already observed in a summary
+// merely because the target has never been retained as an editor draft.
+func (m model) latestLifecycleSnapshot(n Note) Note {
+	latest := n
+	consider := func(candidate Note) {
+		if candidate.ID == n.ID && candidate.Revision > latest.Revision {
+			latest = candidate
+		}
+	}
+	consider(m.Note)
+	if d, ok := m.drafts[n.ID]; ok {
+		consider(d.Note)
+	}
+	for _, list := range [][]Note{m.notes, m.allNotes, m.searchResults} {
+		for _, candidate := range list {
+			consider(candidate)
+		}
+	}
+	return mergeLifecycleMetadata(n, latest)
+}
+func mergeLifecycleMetadata(n, latest Note) Note {
+	n.Revision = latest.Revision
+	n.ExpiresAt, n.IsPinned = latest.ExpiresAt, latest.IsPinned
+	n.ExpirationSource, n.ExpirationNeedsReview = latest.ExpirationSource, latest.ExpirationNeedsReview
+	n.KillHash, n.KillStart = latest.KillHash, latest.KillStart
+	n.DeletedAt, n.DeletedTime, n.DeleteReason = latest.DeletedAt, latest.DeletedTime, latest.DeleteReason
+	return n
 }

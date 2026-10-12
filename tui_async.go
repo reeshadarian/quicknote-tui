@@ -173,7 +173,7 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		if active {
 			m.needsSave, m.saveErr = d.needsSave, d.saveErr
 			m.pendingAction = nil
-			m.installLifecycleDraft(msg.Note.ID, d)
+			return m.installLifecycleDraft(msg.Note.ID, d)
 		}
 		return nil
 	}
@@ -272,8 +272,15 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 		}
 		msg.Note = cloneNote(d.Note)
 	}
+	msg.Note = m.latestLifecycleSnapshot(msg.Note)
+	for i := range msg.Notes {
+		msg.Notes[i] = m.latestLifecycleSnapshot(msg.Notes[i])
+	}
 	if r.Reload {
 		delete(m.drafts, msg.Note.ID)
+	} else if d, ok := m.drafts[msg.Note.ID]; ok && msg.Note.DeletedAt != "" && d.Note.Revision <= msg.Note.Revision {
+		d.Note = mergeLifecycleMetadata(d.Note, msg.Note)
+		m.drafts[msg.Note.ID] = d
 	}
 	ephemeral := []Note{}
 	for _, n := range m.notes {
@@ -293,7 +300,10 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 	m.notes[m.index] = msg.Note
 	m.activateNote() // Pure installation; I/O has already completed.
 	m.clearOverlays(stateTyping)
-	if r.Trash {
+	var recovery tea.Cmd
+	if m.Note.DeletedAt != "" {
+		recovery = m.installLifecycleDraft(m.activeKey(), m.EditorDraft)
+	} else if r.Trash && m.Note.ID < 0 {
 		m.state = stateTrash
 	}
 	if r.Reload {
@@ -313,7 +323,7 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 	m.searchPending = false
 	m.searchQuery = ""
 	m.searchInput.Reset()
-	return nil
+	return recovery
 }
 
 func (m *model) requestSearch() tea.Cmd {
@@ -696,7 +706,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case initDataMsg:
 		m.startupPending = false
-		m.reconcileMaintenance(msg.maintenance)
+		recovery := m.reconcileMaintenance(msg.maintenance)
 		if m.keyboardGeneration == 0 && msg.keyboard.Version != 0 {
 			m.keymap = msg.keyboard
 			if msg.keyboardNotice != "" {
@@ -709,16 +719,16 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.showError("Load failed", msg.err)
-			return m, nil
+			return m, recovery
 		}
 		if m.openGeneration != 0 || m.localVersion != 0 || m.buffer.Text() != "" {
-			return m, nil
+			return m, recovery
 		}
 		m.notes = msg.notes
 		m.allNotes = append([]Note(nil), msg.notes...)
 		m.index = 0
 		m.activateNote()
-		return m, nil
+		return m, recovery
 	case recoveryResult:
 		if msg.Copy {
 			m.copyPending = false

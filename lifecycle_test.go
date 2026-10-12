@@ -217,3 +217,28 @@ func TestQN028CodeAndExplicitEdits(t *testing.T) {
 		t.Fatal("explicit directive edit was ignored")
 	}
 }
+
+func TestQN028ReviewCodeBoundaries(t *testing.T) {
+	cases := map[string]string{
+		"long_backtick_fence":   "````markdown\n```\n#kill 1 second\n```\n````",
+		"long_tilde_fence":      "~~~~text\n~~~\n#kill 1 second\n~~~\n~~~~",
+		"multiline_span":        "prefix `code\n#kill 1 minute\nend`",
+		"multiline_double_span": "prefix ``code `\n#kill 1 minute\nend``",
+		"comment_fence":         "<!--\n```\n-->\n```\n#kill 1 minute\n```",
+		"false_closing_fence":   "```text\n``` not a closing fence\n#kill 1 second\n```",
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			n, e := DeriveExpiration(Note{}, text, lifecycleNow())
+			if e != nil || n.ExpiresAt.Valid {
+				t.Fatal("code armed timer", n.ExpiresAt, e)
+			}
+		})
+	}
+	for _, text := range []string{"````md\n```\n#kill 1 second\n`````\n#kill 2 hours", "~~~~\n~~~\n#kill 1 second\n~~~~\n#kill 2 hours", "start `code\n#kill 1 minute\nend` #kill 2 hours"} {
+		d, e := ParseKillDirective(text)
+		if e != nil || !d.Present || d.Duration != 2*time.Hour {
+			t.Fatal("outside directive not recognized", d, e)
+		}
+	}
+}

@@ -90,24 +90,33 @@ var killValue = regexp.MustCompile(`(?i)^\s+([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]
 func ParseKillDirective(content string) (Directive, error) {
 	var d Directive
 	invalid := false
-	fence := ""
+	var fenceMarker byte
+	fenceLength, inline := 0, 0
 	comment := false
 	for _, line := range strings.Split(content, "\n") {
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			mark := trim[:3]
-			if fence == "" {
-				fence = mark
-			} else if fence == mark {
-				fence = ""
+		if fenceLength > 0 {
+			run := 0
+			for run < len(trim) && trim[run] == fenceMarker {
+				run++
+			}
+			if run >= fenceLength && strings.TrimSpace(trim[run:]) == "" {
+				fenceLength = 0
 			}
 			continue
 		}
-		if fence != "" {
-			continue
+		if !comment && inline == 0 && len(trim) > 0 && (trim[0] == '`' || trim[0] == '~') {
+			marker := trim[0]
+			run := 0
+			for run < len(trim) && trim[run] == marker {
+				run++
+			}
+			if run >= 3 && (marker != '`' || !strings.Contains(trim[run:], "`")) {
+				fenceMarker, fenceLength = marker, run
+				continue
+			}
 		}
 		var clean strings.Builder
-		inline := 0
 		for i := 0; i < len(line); {
 			if comment {
 				if j := strings.Index(line[i:], "-->"); j >= 0 {
@@ -118,7 +127,7 @@ func ParseKillDirective(content string) (Directive, error) {
 				}
 				break
 			}
-			if strings.HasPrefix(line[i:], "<!--") {
+			if inline == 0 && strings.HasPrefix(line[i:], "<!--") {
 				comment = true
 				i += 4
 				continue
