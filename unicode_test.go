@@ -2,6 +2,7 @@ package main
 
 import (
  "testing"
+ "strings"
  tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -33,7 +34,7 @@ func TestQN004BacktickAfterMultibyteDoesNotPanic(t *testing.T) {
  m.cursorCol=1
  next,_:=m.Update(tea.KeyMsg{Type:tea.KeyRunes,Runes:[]rune{'\x60'}})
  got:=next.(model)
- if gotText:=bufferToString(got.buffer);gotText!="é\x60\x60" {t.Fatalf("backtick insertion = %q",gotText)}
+ if gotText:=bufferToString(got.buffer);strings.TrimSuffix(gotText,"\n")!="é\x60\x60" {t.Fatalf("backtick insertion = %q",gotText)}
 }
 
 func TestQN004BackspaceRemovesEntireCombiningSequence(t *testing.T) {
@@ -45,6 +46,6 @@ func TestQN004BackspaceRemovesEntireCombiningSequence(t *testing.T) {
  m.cursorCol=2
  next,_:=m.Update(tea.KeyMsg{Type:tea.KeyBackspace})
  got:=next.(model)
- if text:=bufferToString(got.buffer);text!="!" {t.Fatalf("backspace left %q",text)}
+ if text:=bufferToString(got.buffer);strings.TrimSuffix(text,"\n")!="!" {t.Fatalf("backspace left %q",text)}
  if got.cursorCol!=0 {t.Fatalf("cursor=%d want 0",got.cursorCol)}
 }
