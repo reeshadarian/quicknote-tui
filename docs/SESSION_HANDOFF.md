@@ -4,6 +4,7 @@
 **Working branch:** `dev/v2`
 **Protected branch:** `main` (do not change or merge without explicit approval)
 **Last maintainer-verified baseline:** 2026-10-11
+**Latest development verification:** QN-011, 2026-10-12 UTC; full suite/race/vet/build and scripted PTY/CLI checks passed. See the living ledger for exact commits and evidence.
 
 ## Start here: authoritative documents (all in this repository)
 
@@ -24,21 +25,21 @@
 - One manual test uncovered **missing permanent deletion from Trash UI**. `SQLiteStore.Purge` exists, but Trash lacks a discoverable confirmation workflow; plan it in the appropriate UI/action milestone.
 - Trailing newline behavior during editing may require a targeted follow-up investigation.
 - Some transitional `NoteStore` adapters still suppress errors; address this during the appropriate refactor, not silently as unrelated work.
-- The V2 schema has `revision`, `expires_at`, and `is_pinned`, but CAS write protection and durable expiration/pinning workflows are **not implemented yet**.
+- QN-011 is implemented and verified: content/tag/metadata writes use revision CAS; conflicting TUI drafts retain base revisions and offer keyboard copy/compare/confirmed reload. Separate connections and separate processes pass T-17. Schema stays v2. Durable expiration/pinning UX remains future work.
 - No new Go test runs are implied by uploading these documents. Always distinguish *previously reported pass* from *tests actually run in this session*.
 
-## Next task: QN-011 — optimistic compare-and-swap revisions
+## Next task: QN-012 — async commands with stale result protection
 
-Use §14 of `docs/QUICKNOTE_V2_SPEC.md` (and related contracts) for the exact acceptance criteria; **T-17 must pass**.
+Read the full specification, especially §§3.2–3.4 and §14. QN-011's synchronous CAS is now the storage baseline; preserve it while moving I/O off the event loop.
 
-- Inspect `Note`, `SQLiteStore`, `saveNoteChecked`, `main.go` CLI append, the TUI save/dirty-draft paths, and database revision migration.
-- Load the authoritative revision with each persisted note.
-- Update using a compare-and-swap SQL predicate on `id` **and expected revision**. Increment revision atomically only when one row matches.
-- Return a typed conflict error for stale revisions; distinguish not-found/trashed records and genuine SQLite errors.
-- Preserve unsaved local content after a conflict. Do not automatically merge, drop, or silently overwrite notes.
-- Make CLI append/update respect revision semantics while preserving the existing quiet-mode contract.
-- Add regression tests using **two separate SQLite connections** and verify that the second stale writer cannot overwrite the first writer. Include metadata updates and edge cases appropriate to T-17.
-- Do not enable schema fields as user-facing features prematurely.
+- Introduce typed save/load/search/highlight messages and monotonically increasing request generations.
+- Capture immutable note ID, base revision and local-version snapshots for each job. Apply results only to the matching note/request; a save completing after another edit may update its base revision but must keep that newer draft dirty.
+- Keep the conflict recovery paths and original unsaved buffers. Never refresh a revision and overwrite automatically.
+- **T-02 and T-24 must pass**, alongside QN-011/T-17 and the existing suite.
+- Inspect `store.go`, `tui_conflict.go`, `tui.go`, and the new `cas_*test.go` regressions. Production DB opens use `_busy_timeout=5000&_txlock=immediate`.
+- Leave the broader index-to-Draft conversion for QN-013 and unrelated lifecycle/UI work for their assigned tasks.
+
+Conflict keyboard flow: `C` copy, `I` compare, arrows/PageUp/PageDown scroll, `R` twice reload/discard confirmation, `Esc` keep editing; Enter from the persistent error status retries/reopens recovery. A local conflicting draft can be saved as a separate note even when its remote note was trashed/purged. Saving remains synchronous until this next task.
 
 ## Fedora / Zsh verification commands
 
@@ -78,4 +79,4 @@ The application normally stores real user notes in `~/.local/share/quicknote-tui
 
 ## Ready-to-paste prompt for the next ChatGPT session
 
-> Continue development of https://github.com/reeshadarian/quicknote-tui on `dev/v2`. The repository now contains all self-contained project documents; do not ask for an upload or rely on prior chat context. Read `AGENTS.md`, the entire `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`. Inspect the current branch and recent commits, then implement **QN-011 optimistic revision-based compare-and-swap concurrency** as specified, including T-17 and two-connection regression tests. Preserve unsaved drafts and CLI compatibility, commit changes to `dev/v2`, update the progress ledger, and report tested versus untested outcomes. Never modify `main` without my approval.
+> Continue development of https://github.com/reeshadarian/quicknote-tui on `dev/v2`. The repository now contains all self-contained project documents; do not ask for an upload or rely on prior chat context. Read `AGENTS.md`, the entire `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`. Inspect the current branch and recent commits, then implement **QN-012 typed asynchronous commands with stale-result protection** as specified, including T-02 and T-24. Preserve the verified QN-011 CAS and separate-process/connection T-17 regressions. Preserve unsaved drafts and CLI compatibility, commit changes to `dev/v2`, update the progress ledger, and report tested versus untested outcomes. Never modify `main` without my approval.

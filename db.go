@@ -30,9 +30,9 @@ type Note struct {
 	MatchRow    int
 	MatchCol    int
 	IsDuplicate bool
-	Revision int64
-	ExpiresAt sql.NullString
-	IsPinned bool
+	Revision    int64
+	ExpiresAt   sql.NullString
+	IsPinned    bool
 }
 
 func initDB() *sql.DB {
@@ -42,7 +42,9 @@ func initDB() *sql.DB {
 	dbPath := filepath.Join(dataDir, "notes.sqlite")
 	_, existingErr := os.Stat(dbPath)
 	wasExisting := existingErr == nil
-	db, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000")
+	// Acquire the writer lock before FTS triggers can establish a read snapshot.
+	// The busy timeout bounds cross-process contention; CAS still decides ownership.
+	db, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000&_txlock=immediate")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -89,16 +91,16 @@ func initDB() *sql.DB {
 			log.Fatalf("FTS init error: %v", err)
 		}
 
-		_, _ = db.Exec(`CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN 
-			INSERT INTO notes_fts (rowid, content) VALUES (NEW.id, NEW.content); 
+		_, _ = db.Exec(`CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
+			INSERT INTO notes_fts (rowid, content) VALUES (NEW.id, NEW.content);
 		END;`)
-		
-		_, _ = db.Exec(`CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN 
-			DELETE FROM notes_fts WHERE rowid = OLD.id; 
+
+		_, _ = db.Exec(`CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN
+			DELETE FROM notes_fts WHERE rowid = OLD.id;
 		END;`)
-		
-		_, _ = db.Exec(`CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN 
-			UPDATE notes_fts SET content = NEW.content WHERE rowid = NEW.id; 
+
+		_, _ = db.Exec(`CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN
+			UPDATE notes_fts SET content = NEW.content WHERE rowid = NEW.id;
 		END;`)
 
 		// Backfill existing notes
@@ -108,18 +110,28 @@ func initDB() *sql.DB {
 	// v2 migration: snapshot the live SQLite database before any v2 DDL.
 	// VACUUM INTO creates a transactionally consistent backup, including WAL content.
 	var schemaVersion int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil { log.Fatal(err) }
-	if schemaVersion > 2 { log.Fatalf("database schema version %d is newer than this Quicknote", schemaVersion) }
+	if err := db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil {
+		log.Fatal(err)
+	}
+	if schemaVersion > 2 {
+		log.Fatalf("database schema version %d is newer than this Quicknote", schemaVersion)
+	}
 	if schemaVersion < 2 {
 		if wasExisting {
 			backupPath := dbPath + ".pre-v2.bak"
 			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
 				quoted := strings.ReplaceAll(backupPath, "'", "''")
-				if _, err := db.Exec("VACUUM INTO '" + quoted + "'"); err != nil { log.Fatalf("v2 backup failed; refusing migration: %v", err) }
-			} else if err != nil { log.Fatalf("inspect backup: %v", err) }
+				if _, err := db.Exec("VACUUM INTO '" + quoted + "'"); err != nil {
+					log.Fatalf("v2 backup failed; refusing migration: %v", err)
+				}
+			} else if err != nil {
+				log.Fatalf("inspect backup: %v", err)
+			}
 		}
 		tx, err := db.Begin()
-		if err != nil { log.Fatal(err) }
+		if err != nil {
+			log.Fatal(err)
+		}
 		fields := []string{
 			"ALTER TABLE notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
 			"ALTER TABLE notes ADD COLUMN expires_at TEXT",
@@ -127,27 +139,51 @@ func initDB() *sql.DB {
 		}
 		columns := make(map[string]bool)
 		rows, err := tx.Query("PRAGMA table_info(notes)")
-		if err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		if err != nil {
+			_ = tx.Rollback()
+			log.Fatal(err)
+		}
 		for rows.Next() {
 			var cid, notnull, pk int
 			var name, kind string
 			var def sql.NullString
-			if err = rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil { break }
+			if err = rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil {
+				break
+			}
 			columns[name] = true
 		}
-		if err == nil { err = rows.Err() }
+		if err == nil {
+			err = rows.Err()
+		}
 		_ = rows.Close()
-		if err != nil { _ = tx.Rollback(); log.Fatal(err) }
+		if err != nil {
+			_ = tx.Rollback()
+			log.Fatal(err)
+		}
 		names := []string{"revision", "expires_at", "is_pinned"}
 		for i, statement := range fields {
 			if !columns[names[i]] {
-				if _, err = tx.Exec(statement); err != nil { _ = tx.Rollback(); log.Fatal(err) }
+				if _, err = tx.Exec(statement); err != nil {
+					_ = tx.Rollback()
+					log.Fatal(err)
+				}
 			}
 		}
-		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_expiry_idx ON notes(expires_at) WHERE deleted_at IS NULL AND is_pinned = 0"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
-		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_deleted_at_idx ON notes(deleted_at)"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
-		if _, err = tx.Exec("PRAGMA user_version = 2"); err != nil { _ = tx.Rollback(); log.Fatal(err) }
-		if err = tx.Commit(); err != nil { log.Fatal(err) }
+		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_expiry_idx ON notes(expires_at) WHERE deleted_at IS NULL AND is_pinned = 0"); err != nil {
+			_ = tx.Rollback()
+			log.Fatal(err)
+		}
+		if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS notes_deleted_at_idx ON notes(deleted_at)"); err != nil {
+			_ = tx.Rollback()
+			log.Fatal(err)
+		}
+		if _, err = tx.Exec("PRAGMA user_version = 2"); err != nil {
+			_ = tx.Rollback()
+			log.Fatal(err)
+		}
+		if err = tx.Commit(); err != nil {
+			log.Fatal(err)
+		}
 	}
 	// Repair interrupted FTS initialization without destroying note data.
 	triggers := []string{
@@ -156,13 +192,15 @@ func initDB() *sql.DB {
 		"CREATE TRIGGER IF NOT EXISTS notes_fts_update AFTER UPDATE ON notes BEGIN UPDATE notes_fts SET content=NEW.content WHERE rowid=NEW.id; END",
 	}
 	for _, statement := range triggers {
-		if _, err = db.Exec(statement); err != nil { log.Fatalf("FTS repair: %v", err) }
+		if _, err = db.Exec(statement); err != nil {
+			log.Fatalf("FTS repair: %v", err)
+		}
 	}
 	// Backfill rows missing from an interrupted legacy FTS initialization.
 	if _, err = db.Exec("INSERT INTO notes_fts(rowid, content) SELECT n.id, n.content FROM notes n WHERE NOT EXISTS (SELECT 1 FROM notes_fts f WHERE f.rowid = n.id)"); err != nil {
 		log.Fatalf("FTS backfill: %v", err)
 	}
-		// Retain every trashed note, including identical copies, for 72 full hours.
+	// Retain every trashed note, including identical copies, for 72 full hours.
 	// This comparison uses timestamps rather than calendar-day truncation.
 	if _, err = db.Exec("DELETE FROM tags WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime('now', '-3 days'))"); err != nil {
 		log.Printf("quicknote: cleanup stale tags: %v", err)
@@ -202,10 +240,14 @@ func parseSQLiteTime(val interface{}) (time.Time, string) {
 }
 
 func loadNoteContent(db *sql.DB, id int) string {
-	if id <= 0 { return "" }
+	if id <= 0 {
+		return ""
+	}
 	var content string
 	err := db.QueryRow("SELECT content FROM notes WHERE id = ?", id).Scan(&content)
-	if err != nil { return "" }
+	if err != nil {
+		return ""
+	}
 	return content
 }
 
@@ -230,7 +272,7 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 	var sqlQuery string
 	if inTrash {
 		sqlQuery = `
-			SELECT n.id, n.content, n.updated_at, highlight(notes_fts, 0, '<<M_START>>', '<<M_END>>')
+			SELECT n.id, n.content, n.updated_at, n.revision, n.expires_at, n.is_pinned, highlight(notes_fts, 0, '<<M_START>>', '<<M_END>>')
 			FROM notes_fts f
 			JOIN notes n ON f.rowid = n.id
 			WHERE notes_fts MATCH ? AND n.deleted_at IS NOT NULL
@@ -238,7 +280,7 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 		`
 	} else {
 		sqlQuery = `
-			SELECT n.id, n.content, n.updated_at, highlight(notes_fts, 0, '<<M_START>>', '<<M_END>>')
+			SELECT n.id, n.content, n.updated_at, n.revision, n.expires_at, n.is_pinned, highlight(notes_fts, 0, '<<M_START>>', '<<M_END>>')
 			FROM notes_fts f
 			JOIN notes n ON f.rowid = n.id
 			WHERE notes_fts MATCH ? AND n.deleted_at IS NULL
@@ -256,10 +298,10 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 	for rows.Next() {
 		var n Note
 		var content, updatedAt, highlighted string
-		
-		_ = rows.Scan(&n.ID, &content, &updatedAt, &highlighted)
+
+		_ = rows.Scan(&n.ID, &content, &updatedAt, &n.Revision, &n.ExpiresAt, &n.IsPinned, &highlighted)
 		n.Content = content
-		
+
 		lines := strings.Split(highlighted, "\n")
 		matchedLinesCount := 0
 
@@ -269,7 +311,7 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 				// Calculate exact column index (accounting for multi-byte runes)
 				cleanBefore := strings.ReplaceAll(line[:startIdx], "<<M_START>>", "")
 				cleanBefore = strings.ReplaceAll(cleanBefore, "<<M_END>>", "")
-				
+
 				matchNote := n
 				matchNote.MatchRow = rowIdx
 				matchNote.MatchCol = len([]rune(cleanBefore))
@@ -300,19 +342,19 @@ func searchNotes(db *sql.DB, query string, inTrash bool) []Note {
 			results = append(results, n)
 		}
 	}
-	
+
 	return results
 }
 
 func loadNotes(db *sql.DB, inTrash bool) []Note {
 	var query string
 	if inTrash {
-		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, GROUP_CONCAT(t.tag) 
-				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id 
+		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, n.revision, n.expires_at, n.is_pinned, GROUP_CONCAT(t.tag)
+				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id
 				 WHERE n.deleted_at IS NOT NULL GROUP BY n.id ORDER BY n.deleted_at DESC`
 	} else {
-		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, GROUP_CONCAT(t.tag) 
-				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id 
+		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, n.revision, n.expires_at, n.is_pinned, GROUP_CONCAT(t.tag)
+				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id
 				 WHERE n.deleted_at IS NULL GROUP BY n.id ORDER BY n.updated_at DESC`
 	}
 
@@ -328,18 +370,18 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 		var rawUpdated, rawCreated, rawDeleted interface{}
 		var killHash, killStartStr, rawTags sql.NullString
 
-		err := rows.Scan(&n.ID, &n.Preview, &rawUpdated, &rawCreated, &rawDeleted, &killHash, &killStartStr, &rawTags)
+		err := rows.Scan(&n.ID, &n.Preview, &rawUpdated, &rawCreated, &rawDeleted, &killHash, &killStartStr, &n.Revision, &n.ExpiresAt, &n.IsPinned, &rawTags)
 		if err == nil {
 			n.UpdatedTime, n.UpdatedAt = parseSQLiteTime(rawUpdated)
 			n.CreatedTime, n.CreatedAt = parseSQLiteTime(rawCreated)
-			
+
 			if n.CreatedAt == "" {
 				n.CreatedTime = n.UpdatedTime
 				n.CreatedAt = n.UpdatedAt
 			}
 
 			n.DeletedTime, n.DeletedAt = parseSQLiteTime(rawDeleted)
-			
+
 			if killHash.Valid {
 				n.KillHash = killHash.String
 			}
@@ -370,16 +412,22 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 
 // saveNoteChecked atomically persists content and tags. On failure the
 // caller keeps its original note identity and its unsaved editor buffer.
-func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
- original := n
- if n.ID == -1 || (n.ID == 0 && n.Content == "") || n.IsGhost {return n,nil}
- killStartStr:=""
- if !n.KillStart.IsZero() {killStartStr=n.KillStart.Format(time.RFC3339)}
+func saveNoteChecked(db *sql.DB, n Note) (Note, error) { return saveNoteSnapshot(db, n, false) }
+
+func saveNoteSnapshot(db *sql.DB, n Note, allowEmpty bool) (Note, error) {
+	original := n
+	if n.ID == -1 || (n.ID == 0 && n.Content == "" && !allowEmpty) || n.IsGhost {
+		return n, nil
+	}
+	killStartStr := ""
+	if !n.KillStart.IsZero() {
+		killStartStr = n.KillStart.Format(time.RFC3339)
+	}
 	// 1. THE FIX: Protect database tag parsing from code blocks and comments!
 	reTags := regexp.MustCompile(`(?i)#[a-zA-Z0-9_-]+`)
 	tagMap := make(map[string]bool)
 	n.Tags = []string{}
-	
+
 	inCodeBlock := false
 	lines := strings.Split(n.Content, "\n")
 	for _, line := range lines {
@@ -391,7 +439,7 @@ func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
 		if inCodeBlock || strings.HasPrefix(strings.TrimSpace(line), "//") {
 			continue
 		}
-		
+
 		matches := reTags.FindAllStringIndex(line, -1)
 		for _, m := range matches {
 			// Skip tags trapped in inline backticks
@@ -410,78 +458,96 @@ func saveNoteChecked(db *sql.DB, n Note) (Note, error) {
 		}
 	}
 
- tx,err:=db.Begin()
- if err!=nil {return original,fmt.Errorf("begin save: %w",err)}
- defer tx.Rollback()
- if n.ID==0 {
-  var res sql.Result
-  res,err=tx.Exec("INSERT INTO notes(content, kill_hash, kill_start) VALUES(?,?,?)",n.Content,n.KillHash,killStartStr)
-  if err!=nil {return original,fmt.Errorf("insert note: %w",err)}
-  var id int64
-  id,err=res.LastInsertId()
-  if err!=nil {return original,fmt.Errorf("read new note ID: %w",err)}
-  n.ID=int(id)
- } else {
-  var res sql.Result
-  res,err=tx.Exec("UPDATE notes SET content=?, updated_at=CURRENT_TIMESTAMP, kill_hash=?, kill_start=? WHERE id=? AND deleted_at IS NULL",n.Content,n.KillHash,killStartStr,n.ID)
-  if err!=nil {return original,fmt.Errorf("update note %d: %w",n.ID,err)}
-  affected,e:=res.RowsAffected()
-  if e!=nil {return original,fmt.Errorf("count updated rows: %w",e)}
-  if affected!=1 {return original,fmt.Errorf("note %d no longer active",n.ID)}
- }
- if _,err=tx.Exec("DELETE FROM tags WHERE note_id=?",n.ID);err!=nil {return original,fmt.Errorf("clear tags: %w",err)}
- for _,tag:=range n.Tags {
-  if _,err=tx.Exec("INSERT INTO tags(note_id,tag) VALUES(?,?)",n.ID,tag);err!=nil {return original,fmt.Errorf("save tag %q: %w",tag,err)}
- }
- var duplicates int
- if err=tx.QueryRow("SELECT count(*) FROM notes WHERE content=? AND id<>? AND deleted_at IS NULL",n.Content,n.ID).Scan(&duplicates);err!=nil {return original,fmt.Errorf("check duplicates: %w",err)}
- if err=tx.Commit();err!=nil {return original,fmt.Errorf("commit note: %w",err)}
- now:=time.Now()
- n.UpdatedTime=now
- n.UpdatedAt=now.Format("02 Jan 2006, 3:04 PM")
- if n.CreatedTime.IsZero() {n.CreatedTime=now;n.CreatedAt=n.UpdatedAt}
- n.IsDuplicate=duplicates>0
- return n,nil
+	tx, err := db.Begin()
+	if err != nil {
+		return original, fmt.Errorf("begin save: %w", err)
+	}
+	defer tx.Rollback()
+	if n.ID == 0 {
+		var res sql.Result
+		res, err = tx.Exec("INSERT INTO notes(content, kill_hash, kill_start, revision, expires_at, is_pinned) VALUES(?,?,?,1,?,?)", n.Content, n.KillHash, killStartStr, n.ExpiresAt, n.IsPinned)
+		if err != nil {
+			return original, fmt.Errorf("insert note: %w", err)
+		}
+		var id int64
+		id, err = res.LastInsertId()
+		if err != nil {
+			return original, fmt.Errorf("read new note ID: %w", err)
+		}
+		n.ID = int(id)
+		n.Revision = 1
+	} else {
+		var res sql.Result
+		res, err = tx.Exec("UPDATE notes SET content=?, updated_at=CURRENT_TIMESTAMP, kill_hash=?, kill_start=?, expires_at=?, is_pinned=?, revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL", n.Content, n.KillHash, killStartStr, n.ExpiresAt, n.IsPinned, n.ID, n.Revision)
+		if err != nil {
+			return original, fmt.Errorf("update note %d: %w", n.ID, err)
+		}
+		affected, e := res.RowsAffected()
+		if e != nil {
+			return original, fmt.Errorf("count updated rows: %w", e)
+		}
+		if affected != 1 {
+			return original, casMiss(tx, n.ID, n.Revision, true)
+		}
+		n.Revision++
+	}
+	if _, err = tx.Exec("DELETE FROM tags WHERE note_id=?", n.ID); err != nil {
+		return original, fmt.Errorf("clear tags: %w", err)
+	}
+	for _, tag := range n.Tags {
+		if _, err = tx.Exec("INSERT INTO tags(note_id,tag) VALUES(?,?)", n.ID, tag); err != nil {
+			return original, fmt.Errorf("save tag %q: %w", tag, err)
+		}
+	}
+	var duplicates int
+	if err = tx.QueryRow("SELECT count(*) FROM notes WHERE content=? AND id<>? AND deleted_at IS NULL", n.Content, n.ID).Scan(&duplicates); err != nil {
+		return original, fmt.Errorf("check duplicates: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return original, fmt.Errorf("commit note: %w", err)
+	}
+	now := time.Now()
+	n.UpdatedTime = now
+	n.UpdatedAt = now.Format("02 Jan 2006, 3:04 PM")
+	if n.CreatedTime.IsZero() {
+		n.CreatedTime = now
+		n.CreatedAt = n.UpdatedAt
+	}
+	n.IsDuplicate = duplicates > 0
+	return n, nil
 }
 
 // Legacy call sites can use this until their Update paths are converted to
 // explicit error handling. The checked API above is preferred.
-func saveNote(db *sql.DB,n Note) Note {
- saved,err:=saveNoteChecked(db,n)
- if err!=nil {log.Printf("quicknote: note save failed (id %d): %v",n.ID,err);return n}
- return saved
+func saveNote(db *sql.DB, n Note) Note {
+	saved, err := saveNoteChecked(db, n)
+	if err != nil {
+		log.Printf("quicknote: note save failed (id %d): %v", n.ID, err)
+		return n
+	}
+	return saved
 }
 
-// trashNote never deduplicates content: note IDs remain independently recoverable.
+// Legacy helpers retain signatures while sharing guarded storage operations.
 func trashNote(db *sql.DB, id int) {
-	if id <= 0 { return }
-	if _, err := db.Exec("UPDATE notes SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP) WHERE id = ?", id); err != nil {
-		log.Printf("Error trashing note %d: %v", id, err)
-	}
-}
-
-func hardDeleteNote(db *sql.DB, id int) {
 	if id > 0 {
-		_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", id)
-		_, _ = db.Exec("DELETE FROM notes WHERE id = ?", id)
-	}
-}
-
-func restoreNote(db *sql.DB, id int) {
-	if id > 0 {
-		_, err := db.Exec("UPDATE notes SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP, kill_start = CURRENT_TIMESTAMP WHERE id = ?", id)
-		if err != nil {
-			log.Printf("Error restoring note %d: %v", id, err)
+		if err := NewSQLiteStore(db).Trash(id); err != nil {
+			log.Printf("trash note %d: %v", id, err)
 		}
 	}
 }
-
+func hardDeleteNote(db *sql.DB, id int) { deleteNote(db, id) }
+func restoreNote(db *sql.DB, id int) {
+	if id > 0 {
+		if err := NewSQLiteStore(db).Restore(id); err != nil {
+			log.Printf("restore note %d: %v", id, err)
+		}
+	}
+}
 func deleteNote(db *sql.DB, id int) {
 	if id > 0 {
-		_, _ = db.Exec("DELETE FROM tags WHERE note_id = ?", id)
-		_, err := db.Exec("DELETE FROM notes WHERE id = ?", id)
-		if err != nil {
-			log.Printf("Error deleting note %d: %v", id, err)
+		if err := NewSQLiteStore(db).Purge(id); err != nil {
+			log.Printf("purge note %d: %v", id, err)
 		}
 	}
 }

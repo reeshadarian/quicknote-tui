@@ -24,6 +24,6 @@ Read both in full before editing. Inspect `git status`, `git log -5 --oneline`, 
 
 ## Entry prompt for a resumed coding session
 
-> Read `AGENTS.md`, `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`; inspect current git state, choose the next READY P0/P1 task (currently QN-011 unless the branch has advanced), implement its acceptance criteria with tests, and update the progress file. Report exact commits, tests, and blockers. Do not implement unrelated features.
+> Read `AGENTS.md`, `docs/QUICKNOTE_V2_SPEC.md`, `docs/IMPLEMENTATION_PROGRESS.md`, and `docs/SESSION_HANDOFF.md`; inspect current git state, choose the next READY P0/P1 task (currently QN-012 unless the branch has advanced), implement its acceptance criteria with tests, and update the progress file. Report exact commits, tests, and blockers. Do not implement unrelated features.
 
-The original specification was produced from public static inspection; implementation and verified regression tests followed on `dev/v2`. QN-001–QN-010 have been committed and the maintainer reported passing Go/race tests on 2026-10-11. The next intended task is QN-011, subject to current branch and ledger inspection.
+The original specification was produced from public static inspection; implementation and verified regression tests followed on `dev/v2`. QN-001–QN-010 have been committed and the maintainer reported passing Go/race tests on 2026-10-11. QN-011 CAS and conflict recovery were implemented and passed Go/race/vet/build, independent-process/connection concurrency tests, and scripted PTY/CLI checks on 2026-10-12 UTC. The next intended task is QN-012, subject to current branch and ledger inspection.

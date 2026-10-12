@@ -19,7 +19,7 @@ go build -o /tmp/quicknote-v2-smoke .
 For the new store and migration tests:
 
 ```bash
-go test -count=1 -v -run 'TestQN009|TestQN010' .
+go test -count=1 -v -run 'TestQN009|TestQN010|TestQN011' .
 ```
 
 Use an isolated HOME for manual checks:
@@ -30,7 +30,7 @@ HOME="$tmp_home" /tmp/quicknote-v2-smoke -n "test note" -q
 HOME="$tmp_home" /tmp/quicknote-v2-smoke
 ```
 
-Do not run a development binary against real notes until the migration tests pass. The migration should create a pre-v2 backup of an existing v1 database. The v2 schema adds revision, expires_at, and is_pinned. CAS revision enforcement and TTL scheduling are future tasks.
+Do not run a development binary against real notes until the migration tests pass. The migration should create a pre-v2 backup of an existing v1 database. The v2 schema adds revision, expires_at, and is_pinned. CAS revision enforcement is implemented. Async I/O and TTL scheduling remain future tasks. QN-011 includes separate-connection and separate-process concurrency regressions and keyboard conflict recovery; see the living ledger for verification details.
 
 Provide test command output and git commit SHA in your next implementation session.
 

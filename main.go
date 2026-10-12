@@ -1,11 +1,11 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"errors"
-	"database/sql"
 	"log"
 	"os"
 	"os/exec"
@@ -41,10 +41,14 @@ func main() {
 
 	} else {
 		stat, statErr := os.Stdin.Stat()
-		if statErr != nil { log.Fatalf("inspect stdin: %v", statErr) }
+		if statErr != nil {
+			log.Fatalf("inspect stdin: %v", statErr)
+		}
 		if (stat.Mode() & os.ModeCharDevice) == 0 {
 			bytes, readErr := io.ReadAll(os.Stdin)
-			if readErr != nil { log.Fatalf("read stdin: %v", readErr) }
+			if readErr != nil {
+				log.Fatalf("read stdin: %v", readErr)
+			}
 			pipedText = strings.TrimSpace(string(bytes))
 
 			tty, err := os.Open("/dev/tty")
@@ -70,7 +74,9 @@ func main() {
 		}
 	}
 	// Quiet capture is silent on success, including when there is no input.
-	if *quietFlag { return }
+	if *quietFlag {
+		return
+	}
 
 	p := tea.NewProgram(
 		initialModel(db, startTime),
@@ -82,47 +88,62 @@ func main() {
 		log.Fatal(err)
 	}
 }
-// persistCLIInput uses one transaction for the note operation. All failures
-// propagate to main so shell callers receive a nonzero exit status.
+
+// persistCLIInput selects a snapshot, then uses the same transactional CAS save
+// as the editor. A concurrent append fails visibly rather than dropping text.
 func persistCLIInput(db *sql.DB, content, title string, last bool) error {
- if content=="" { return nil }
- tx,err:=db.Begin()
- if err!=nil {return fmt.Errorf("begin CLI save: %w",err)}
- defer tx.Rollback()
- var id int
- var existing string
- if last {
-  err=tx.QueryRow("SELECT id, content FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1").Scan(&id,&existing)
-  if err!=nil && !errors.Is(err,sql.ErrNoRows) {return fmt.Errorf("lookup recent note: %w",err)}
- } else if title!="" {
-  rows,e:=tx.Query("SELECT id, content FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC")
-  if e!=nil {return fmt.Errorf("lookup titled note: %w",e)}
-  for rows.Next() {
-   var candidateID int
-   var candidateContent string
-   if e=rows.Scan(&candidateID,&candidateContent);e!=nil {break}
-   if strings.EqualFold(extractTitle(candidateContent),sanitizeFilename(title)) {
-    id,existing=candidateID,candidateContent
-    break
-   }
-  }
-  if e==nil {e=rows.Err()}
-  closeErr:=rows.Close()
-  if e!=nil {return fmt.Errorf("scan titled notes: %w",e)}
-  if closeErr!=nil {return fmt.Errorf("close title query: %w",closeErr)}
-  if id==0 {content="# "+title+"\n\n"+content}
- }
- if id>0 {
-  res,e:=tx.Exec("UPDATE notes SET content = ?, updated_at = datetime('now', '+1 second') WHERE id = ? AND deleted_at IS NULL",strings.TrimRight(existing," \n")+"\n"+content,id)
-  if e!=nil {return fmt.Errorf("append to note %d: %w",id,e)}
-  affected,e:=res.RowsAffected()
-  if e!=nil {return fmt.Errorf("check append to note %d: %w",id,e)}
-  if affected!=1 {return fmt.Errorf("note %d no longer available",id)}
- } else {
-  if _,err=tx.Exec("INSERT INTO notes (content, updated_at) VALUES (?, datetime('now', '+1 second'))",content);err!=nil {
-   return fmt.Errorf("create note: %w",err)
-  }
- }
- if err=tx.Commit();err!=nil {return fmt.Errorf("commit CLI save: %w",err)}
- return nil
+	return persistCLIInputWithStore(db, NewSQLiteStore(db), content, title, last)
+}
+
+// Injection seam for deterministic concurrent CLI regression tests.
+func persistCLIInputWithStore(db *sql.DB, store NoteStore, content, title string, last bool) error {
+	if content == "" {
+		return nil
+	}
+	var id int
+	if last {
+		err := db.QueryRow("SELECT id FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1").Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("lookup recent note: %w", err)
+		}
+	} else if title != "" {
+		rows, err := db.Query("SELECT id,content FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC")
+		if err != nil {
+			return fmt.Errorf("lookup titled note: %w", err)
+		}
+		for rows.Next() {
+			var candidateID int
+			var candidateContent string
+			if err = rows.Scan(&candidateID, &candidateContent); err != nil {
+				break
+			}
+			if strings.EqualFold(extractTitle(candidateContent), sanitizeFilename(title)) {
+				id = candidateID
+				break
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		closeErr := rows.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	n := Note{Content: content}
+	if id > 0 {
+		var err error
+		n, err = store.GetNote(id)
+		if err != nil {
+			return err
+		}
+		n.Content = strings.TrimRight(n.Content, " \n") + "\n" + content
+	} else if title != "" && !last {
+		n.Content = "# " + title + "\n\n" + content
+	}
+	_, err := store.Save(n)
+	return err
 }

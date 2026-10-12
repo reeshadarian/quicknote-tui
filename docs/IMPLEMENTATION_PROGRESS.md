@@ -2,8 +2,8 @@
 
 Branch: `dev/v2`
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Task: QN-001 — BASELINE SCAFFOLD COMMITTED; VERIFICATION PENDING
-Updated: 2026-10-11
+Current task: QN-011 — implementation and acceptance verified; next QN-012
+Updated: 2026-10-12 UTC (2026-10-11 America/Los_Angeles)
 
 ## Completed repository changes
 
@@ -158,3 +158,46 @@ Next recommended task: QN-011 optimistic revision compare-and-swap, after ensuri
 **Additional maintainer verification:** after reporting 25 of 29 manual checklist items completed, the maintainer subsequently confirmed pipeline capture persisted with an isolated Zsh test HOME and independently reran `TestQN010V1MigrationBackupAndIdempotency` (PASS). Permanent-delete-from-Trash UI remains unavailable; the remaining planned manual checks are not all confirmed. No new executable build was run for this documentation-only task.
 
 **Next recommended task:** QN-011, optimistic compare-and-swap revisions, after re-reading the specification and inspecting actual `dev/v2` HEAD. Preserve `main`.
+
+
+## QN-011 — Revision CAS and recoverable conflicts (2026-10-12 UTC)
+
+**DONE on `dev/v2`.** Implementation commit: the commit containing this entry (`git log --grep='QN-011'`); the exact SHA is recorded in the follow-up documentation entry. Starting HEAD was `f0ffaec` (documentation consolidation). No changes or merges to `main`.
+
+### Changes and contracts
+
+- `db.go`: content, derived tags/FTS, legacy timer fields, expiration and pin snapshots save transactionally with `WHERE id=? AND revision=? AND deleted_at IS NULL`. Successful creates start at revision 1 (the existing v2 default); successful updates advance once. Conflicts and rolled-back writes return the original caller snapshot, including its revision. Production SQLite connections use `_txlock=immediate` and the existing 5000 ms busy timeout: acquire the SQLite writer lock before FTS can establish a read snapshot, then evaluate CAS. There is no retry with a refreshed revision or automatic merge.
+- `store.go`: `GetNote` reads content, revision, metadata and tags from one SQL snapshot. List/search carry revisions. `ConflictError` supports `errors.Is(ErrConflict)` and `errors.As`, with note ID and expected/actual revisions. Missing, trashed and wrong-state errors remain distinct from SQLite errors. Trash, restore, purge, pin and expiration have revision-guarded APIs; metadata changes advance revision atomically. ID-only compatibility methods fetch a snapshot then perform CAS; the TUI uses its displayed/base revision instead. Explicit `SaveCopy` can persist even a deliberately empty conflicting draft.
+- `main.go`: title/recent append and creation use the same checked save transaction, including tags/FTS and metadata. Append conflicts reach stderr/nonzero exit through the existing CLI error path. Existing flags, quiet output and input normalization remain in place; ties in recent selection are now deterministic by ID. The broader byte-preservation/lifecycle CLI work remains QN-040.
+- `tui.go`, `tui_conflict.go`: every existing UI save handler checks errors. Conflict blocks navigation/new/trash/delete/exit before losing a draft. Sessions retain their base snapshot/revision, dirty state and histories. Content-only reloads were replaced by snapshot reads; failed navigation loads keep the previous identity. Search opening no longer reloads/replaces the underlying editor list. Persistent status survives typing. Recovery is keyboard-only: `C` saves a copy, `I` toggles a line comparison, arrows/PageUp/PageDown scroll, `R` then `R` confirms discarding the local draft and re-reads the current stored version, `Esc` keeps editing. Remote trash/purge allows copy recovery but cannot silently reload an unavailable active note. No automatic overwrite choice is provided.
+- Regression files: `cas_test.go`, `cas_process_test.go`, `cas_migration_test.go`. Two independent SQLite pools (one physical connection each), and two separate child processes, start with the same revision: exactly one succeeds, the other receives conflict. Tests also cover metadata races, tags/FTS, transaction revision rollback, busy/closed DB errors, CLI append collision/retry, session base revisions, failed/empty copies, latest-at-confirmation reload, deleted remote recovery, and four conflict layout sizes. Existing `tui_baseline_test.go` and `tui_session_test.go` fixtures now read real note snapshots instead of fabricating revision-zero persisted notes; their behavioral assertions remain intact.
+
+### Verification executed in this session
+
+Environment: Linux amd64, Go **1.25.9** installed in `/tmp/go`, CGO/GCC available. All tests use synthetic temporary data. No personal notes were accessed.
+
+**PASSED:**
+
+- Before production changes: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 ./...` at `f0ffaec`.
+- Final suite: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 ./...`.
+- Verbose regression run: `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=1 -v ./...` (followed by an additional successful full run after adding busy, empty-copy and backup-recovery coverage).
+- `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -race -count=1 ./...`.
+- `CGO_ENABLED=1 /tmp/go/bin/go test -tags sqlite_fts5 -count=20 -run 'TestQN011T17' .` — repeated independent-connection and independent-process T-17 checks.
+- `CGO_ENABLED=1 /tmp/go/bin/go vet -tags sqlite_fts5 ./...`.
+- `CGO_ENABLED=1 /tmp/go/bin/go build -tags sqlite_fts5 -o /tmp/quicknote-qn011 .`.
+- `git diff --check`; `gofmt -l` on all changed Go files returned no filenames.
+- Isolated built-binary CLI check using Python/subprocess: quiet title capture and recent append emitted zero stdout/stderr on success; revision advanced and tags updated; injected UPDATE failure produced nonzero exit/meaningful stderr/zero stdout, with content/revision unchanged and fresh integrity check `ok`.
+- Scripted **80×24 PTY** keyboard pass: external connection changed revision; local edit plus Ctrl+N displayed conflict and retained draft; `I` showed both line variants, `C` persisted a distinct copy, Esc exited, and both versions remained in SQLite. Model render tests cover **120×40, 80×24, 50×12, 25×5**, without clipping the recovery choices.
+- Legacy v1 fixture migrated to v2, rejected the stale legacy snapshot, preserved active/trash IDs and content, and recovered the original content/tags/schema version from `.pre-v2.bak` via SQLite `VACUUM INTO`; recovered `PRAGMA integrity_check` returned `ok`.
+
+**Initial failures corrected:** new tests first failed to compile because CAS APIs were absent; the first simultaneous-write test exposed deferred transaction lock-upgrade contention, resolved with immediate write transactions. Old model fixtures lacked revisions, resolved by loading real persisted snapshots. `git diff --check` initially found trailing SQL whitespace, removed before commit.
+
+**Diagnostic caveat:** the bundled SQLite FTS5 can report a transient checksum mismatch on a connection whose FTS structure cache was populated before another connection's write. This was reproduced on unchanged `f0ffaec`: cached checker reported mismatch, a fresh checker reported `ok`. The cross-connection regression validates persisted integrity using a fresh connection, and independently validates winning content/tags/FTS. No speculative FTS/schema rewrite was made.
+
+**NOT RUN:** human-operated Fedora/Zsh/Kitty/tmux interaction and platform/clipboard matrix; remote GitHub CI results were not used as passing evidence. PTY automation is not a claim of manual Fedora verification.
+
+### Database, compatibility and next task
+
+Schema remains **user_version 2**; no new migration or retention policy change. Existing v1 backup/migration/recovery fixtures pass. Production database/backup operations were not performed.
+
+No QN-011 blocker remains. Saving is still synchronous and can wait for the SQLite busy timeout; **QN-012 is next READY** (011 prerequisite satisfied): typed asynchronous save/load/search/highlight commands, note/request/local-version generations, stale-completion rejection, and T-02/T-24. QN-013 still owns the broader Draft/NoteID refactor. List/search compatibility reads still suppress some errors; permanent-delete confirmation from Trash is QN-032; ghost conversion safety is QN-031; editor trailing-newline behavior remains open. Pin/TTL APIs here provide CAS groundwork without exposing those later lifecycle features.
