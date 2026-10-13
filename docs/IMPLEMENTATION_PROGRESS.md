@@ -1,7 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: f2bbf919e3beb672f2169567712705b0643b9119
+Latest implementation SHA: 7f36a84c6bb7d47fefe95b5e996166c73f16e6ee
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-032 REVIEW; final M2 acceptance pending (approved execution)
 Updated: 2026-10-13 UTC
@@ -727,3 +727,31 @@ All Go commands use `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`:
 - Changed Go files `gofmt -l` **PASSED**, no filenames. Individual owned-path But JSON added-line whitespace/conflict audit substitutes for historical raw Git diff checks; exact audit/commit evidence is in task-5-report.md.
 
 Schema **3** unchanged. Synthetic fixtures only; no production database queries, user-file content inspection or mutation during this correction. Earlier inspection-only deviation remains disclosed above. **NOT RUN:** human Fedora/Zsh/Kitty/tmux/real clipboard, remote CI and release benchmarks. No secure-erasure claim. No final correction gate failure; unchanged full/race suites were not repeated. Continue scoped re-review and final M2 gates; **QN-018 only after M2 acceptance**.
+
+## QN-032 accepted and integrated — 2026-10-13 UTC
+
+**DONE** task implementation, final M2 acceptance pending. Schema **3**, spec **1.1.0**. Reviewed source `2bd7e6c3757acac980e59a047296aafa43cb54fc` and correction `1ff8c65e3394a31bc4439daed8de54bb82eba98e` were copied append-only to `dev/v2` as **`4736b6ee8326f4dfd0081a17c6bb9ab0b79f3f11`** and **`7f36a84c6bb7d47fefe95b5e996166c73f16e6ee`**. Original agent commits/branch remain intact; no main mutation or reviewed-history rewrite.
+
+Delivered read-only Trash with reason/deletion/recovery metadata and bounded Unicode scrolling; default-Cancel no-timer restore or validated directive reset; metadata-only latest manual Trash Undo (including ghostTrash and late acknowledgments); default-Cancel permanent deletion through state/revision CAS, atomic selected note/tag/FTS deletion; soft Trash for persisted empty notes and memory cleanup for unpersisted drafts. Pending first saves retain assigned-ID ownership. Ctrl+Z remains editor undo. Obsolete UI mutation/PurgeCAS paths are removed, internal adapters preserved.
+
+Exact72h recovery remains valid; >72h restore fails even before purge, uncertain legacy dates are not inferred expired. Confirmed lifecycle mutations sample the actual action clock, while View uses captured display time. Shared panel body geometry bounds stored scroll on keys/resize, matching pure rendering. Follow-up loads carry metadata-only purge ownership through stale-target refetch; clean source cleanup retains newer dirty/version/revision recovery.
+
+Two independent reviewers approved the important scrolling correction. Final correction worker gates **PASSED** with `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`:
+- `go test -tags sqlite_fts5 -count=1 ./...` —23.390s.
+- `go test -tags sqlite_fts5 -race -count=1 ./...` —97.907s.
+- `go vet -tags sqlite_fts5 ./...` —exit0.
+- `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn032-bin .` —normal primary build, exit0.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestQN032|TestQN005|TestQN011T17|TestQN031(LateTrash|Review)|TestQN029(Queue|Canceled|Continuation|ReviewQueued)' .` —110.274s.
+- Verbose default/legacy/custom six-size and scroll layouts —5.078s; gofmt and scoped owned-path GitButler whitespace/conflict audit passed.
+- Rebuilt synthetic PTY **4/4** restore/undo/forever/duplicate-asset scenarios plus **2/2** Unicode EOF reversal/resize/tiny scenarios.
+- Adapted independent review overlay PASSED2.268s (worker), PASSED2.295s (code reviewer). Independent strict Trash harness PASSED1/1 on action-clock corrected code, with exact confirmation reset bounds, duplicate note/tags/FTS graph, no-timer ordinary save/restart, Undo and selected deletion. Final aggregate harness must still run on the final tree.
+
+**FAILED then fixed:** original missing restore/Undo/forever/empty-note behavior; >72h pre-purge restore; long-preview tail; queued manual Trash behind metadata; held older acknowledgment stealing Undo; stale display-clock reset/manual deletion; selected25×5 Commands rows; overscroll and clean draft restash. Red/green and final exact evidence are retained in this ledger and task report.
+
+**Minor for final milestone review:** a preserved imported revision-zero Trash entry uses0 as the purge-marker absence sentinel, so its clean local session can be restashed after successful permanent deletion. Focused synthetic overlay FAILED0.011s; database deletion remains correct, no data resurrection or secure-erasure requirement. Use explicit presence if the final review requires cleanup. Also triage the earlier queued-TTL cancellation flash replaced by generic Saved. No unresolved Important task finding.
+
+**Inspection deviation:** one workspace-wide GitButler diff accidentally included existing config/log diff content. No user file was modified/committed, and no production SQLite query/test ran; the binary database diff had no content hunks. All subsequent audits used only individual owned paths, without repeating user contents. Do not claim no user-file content was read.
+
+**NOT RUN:** human Fedora/Zsh/Kitty/tmux/real clipboard checks, remote CI, release benchmarks. No production backup/migration/deletion test. Next: integrate reproducible M2 scripts, run final full/race/vet/normal-build/repeated/fuzz/CLI/PTY gates and one broad milestone review. QN-018 is READY after M2 acceptance (QN-009 dependency met); do not begin it during final M2 work. The earlier extra origin/QN-028 ref remains documented.
+
+Coordinator integrated-tree check PASSED: `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache go test -tags sqlite_fts5 -count=1 -run 'TestQN032T21|TestQN032T31|TestQN032DeleteForeverGuard' .` —0.018s. Final aggregate gates remain required.
