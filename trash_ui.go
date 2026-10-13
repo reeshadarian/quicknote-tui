@@ -137,15 +137,40 @@ func (m model) trashStatus() string {
 	}
 	return fmt.Sprintf("Trash · %s · deleted %s · recoverable until %s", reason, at.In(time.Local).Format("2006-01-02 15:04 MST"), at.Add(72*time.Hour).In(time.Local).Format("2006-01-02 15:04 MST"))
 }
-func (m model) trashView() string {
+
+const trashTitle = "Trash · read-only"
+
+func (m model) trashFooter() string {
+	return m.shortcut("note.restore") + " Restore · " + m.shortcut("commands.open") + " Commands\nDelete forever via Commands · Esc Back"
+}
+
+func (m model) trashPreview() (rows []string, height int) {
 	body := m.trashStatus() + "\n\n" + m.buffer.Text()
 	if m.flashMsg != "" {
 		body = m.flashMsg + "\n" + body
 	}
-	rows := wrapDisplay(body, m.layout().Width)
-	top := max(0, min(m.viewport.YOffset, len(rows)-1))
-	body = strings.Join(rows[top:], "\n")
-	return m.panel("Trash · read-only", body, m.shortcut("note.restore")+" Restore · "+m.shortcut("commands.open")+" Commands\nDelete forever via Commands · Esc Back")
+	width, total, headers, footers := m.panelGeometry(trashTitle, m.trashFooter())
+	return wrapDisplay(body, width), max(0, total-len(headers)-len(footers))
+}
+
+func (m model) trashScrollLimit() int {
+	rows, height := m.trashPreview()
+	if height == 0 {
+		return 0
+	}
+	return max(0, len(rows)-height)
+}
+
+func (m *model) clampTrashScroll() {
+	if m.state == stateTrash {
+		m.viewport.YOffset = max(0, min(m.viewport.YOffset, m.trashScrollLimit()))
+	}
+}
+
+func (m model) trashView() string {
+	rows, _ := m.trashPreview()
+	top := max(0, min(m.viewport.YOffset, m.trashScrollLimit()))
+	return m.panel(trashTitle, strings.Join(rows[top:], "\n"), m.trashFooter())
 }
 
 func (m *model) completeDeleteForever(r lifecycleRequest) tea.Cmd {
@@ -165,11 +190,9 @@ func (m *model) completeDeleteForever(r lifecycleRequest) tea.Cmd {
 	delete(m.lifecycleQueued, r.Key)
 	m.flashMsg = "Deleted forever"
 	if m.activeKey() == r.Key && m.localVersion == r.Version {
-		// requestOpen normally snapshots the departing draft; remove its clean copy
-		// after capturing the load so deleted content is not retained in sessions.
-		cmd := m.requestOpen(-1, true, nil, false)
-		delete(m.drafts, r.Key)
-		return cmd
+		// The load owns clean-source cleanup through reconciliation, including
+		// intervening events that might snapshot the departing draft again.
+		return m.requestLoad(loadRequest{TargetID: -1, Trash: true, PurgedSourceRevision: r.Expected})
 	}
 	return m.finishExit()
 }

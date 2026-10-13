@@ -703,3 +703,27 @@ Independent actual-PTY interval checking caught reset time using the last displa
 - `gofmt -l` on all13 changed Go files — no output. Individual owned-path GitButler diffs and added-line whitespace/conflict-marker audit replace historical raw Git diff checks under current policy; final audit evidence is in the task report.
 
 No final worker test failure. Full/race were not repeated after unchanged source. Independent reviews/final M2 acceptance remain pending; task is REVIEW, not DONE.
+
+### QN-032 review correction 1 — 2026-10-13 UTC
+
+**REVIEW**, same dedicated `qn-v2/QN-032-trash`, above unchanged reviewed implementation **2bd7e6c3757acac980e59a047296aafa43cb54fc**. Separate correction commit containing this entry; immutable SHA is recorded in `.superpowers/sdd/2026-10-12-m2-lifecycle/task-5-report.md`. Coordinator owns re-review, integration/publication and final M2 acceptance.
+
+Both independent findings reproduced: readonly Trash stored an unbounded scroll offset, making reverse scrolling appear inert after EOF; successful permanent deletion's follow-up load re-created the removed clean source draft. The coordinator clarified the correct bound is the last full viewport, so notes that fit stay at zero. The original external scroll reproduction used a short note and expected unnecessary scrolling; the reviewer independently supplied a long Unicode fixture with unchanged immediate-reversal assertion plus a short-note zero-offset assertion. Original overlay remains preserved.
+
+Trash now shares the panel's wrapped header/footer geometry, clamps stored offset after Update/resize/modal return, and uses the same bound in pure View. PageUp/PageDown move by visible body rows. The narrow `layout.go` geometry extraction was explicitly approved; existing panel output remains equivalent. Permanent deletion carries only its confirmed revision in the existing follow-up load request. Matching successful reconciliation forgets the unchanged clean source even after maintenance snapshots or a superseded target's full refetch. Dirty/version-changed/newer-revision drafts, error recovery and unrelated history remain retained. No new controller, queue, content snapshot or storage behavior.
+
+Changed: `layout.go`, `trash_ui.go`, `tui.go`, `tui_async.go`, new `trash_review_test.go`, ledger/handoff. Public-key regressions cover immediate Up/PageUp reversal after repeated PageDown, complete EOF, Unicode wrapping, no-content/history edits, all default/legacy/custom profiles and six sizes, nested Commands resize, zero-body/short bounds and pure View. Async regressions cover actual delete→follow-up load, maintenance interleave, full-refetch content/revision pairing, dirty/version/revision changes and deletion/read errors.
+
+All Go commands use `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`:
+
+- Baseline `go test -tags sqlite_fts5 -count=1 ./...` **PASSED18.230s**.
+- Original independent overlay `-overlay /tmp/qn032-review-overlay.json -count=1 -run '^TestReviewQN032' .` **FAILED0.013s**, reproducing both findings. Reviewer-adapted overlay `/tmp/qn032-review-adapted-overlay.json` **FAILED1.701s → PASSED2.268s** on final source.
+- New `-count=1 -run '^TestQN032Review' .` **FAILED25.890s**, then the equivalent shorter fixture **FAILED3.126s → PASSED4.934s** after correction and expanded ownership/resize cases.
+- Final `go test -tags sqlite_fts5 -count=1 ./...` **PASSED23.390s**; `go test -tags sqlite_fts5 -race -count=1 ./...` **PASSED97.907s**.
+- `go vet -tags sqlite_fts5 ./...` and normal `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn032-bin .` **PASSED**, exit0.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestQN032|TestQN005|TestQN011T17|TestQN031(LateTrash|Review)|TestQN029(Queue|Canceled|Continuation|ReviewQueued)' .` **PASSED110.274s**.
+- `go test -tags sqlite_fts5 -count=1 -v -run 'TestQN032KeyboardAndLayouts|TestQN032ReviewScrollBounds' . > /tmp/qn032-correction-layout-snapshots.txt` **PASSED5.078s**.
+- `python3 /tmp/qn032-pty.py` **PASSED4/4**, default/legacy readonly/Cancel/restore/reset/restart/Undo/forever/duplicate graph/FTS. `python3 /tmp/qn032-scroll-pty.py` **PASSED2/2**, actual Unicode EOF reversal, short-after-resize, tiny terminal survival and unchanged note/tag/FTS graph.
+- Changed Go files `gofmt -l` **PASSED**, no filenames. Individual owned-path But JSON added-line whitespace/conflict audit substitutes for historical raw Git diff checks; exact audit/commit evidence is in task-5-report.md.
+
+Schema **3** unchanged. Synthetic fixtures only; no production database queries, user-file content inspection or mutation during this correction. Earlier inspection-only deviation remains disclosed above. **NOT RUN:** human Fedora/Zsh/Kitty/tmux/real clipboard, remote CI and release benchmarks. No secure-erasure claim. No final correction gate failure; unchanged full/race suites were not repeated. Continue scoped re-review and final M2 gates; **QN-018 only after M2 acceptance**.

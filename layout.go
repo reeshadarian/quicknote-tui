@@ -211,9 +211,12 @@ func clipFrame(s string, width, height int) string {
 	}
 	return strings.Join(lines, "\n")
 }
-func (m model) panel(title, body, footer string) string {
+
+// panelGeometry is shared by rendering and scroll bounds so wrapped headers
+// and footers reserve exactly the same number of rows.
+func (m model) panelGeometry(title, footer string) (width, height int, headers, footers []string) {
 	l := m.layout()
-	height := m.viewport.Height
+	height = m.viewport.Height
 	if height <= 0 {
 		height = l.Height - 1
 	}
@@ -221,16 +224,20 @@ func (m model) panel(title, body, footer string) string {
 	if m.windowHeight > 0 {
 		height = m.windowHeight
 	}
-	width := l.Width
-	headers := wrapDisplay(title, width)
-	footers := wrapDisplay(footer, width)
-	if height == 1 {
-		return clipFrame(footer, width, 1)
-	}
+	width = l.Width
+	headers = wrapDisplay(title, width)
+	footers = wrapDisplay(footer, width)
 	if len(footers) >= height {
 		footers = footers[:height-1]
 	}
 	headers = headers[:min(len(headers), max(0, height-len(footers)))]
+	return
+}
+func (m model) panel(title, body, footer string) string {
+	width, height, headers, footers := m.panelGeometry(title, footer)
+	if height == 1 {
+		return clipFrame(footer, width, 1)
+	}
 	available := max(0, height-len(headers)-len(footers))
 	lines := append([]string(nil), headers...)
 	content := wrapDisplay(body, width)

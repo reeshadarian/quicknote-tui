@@ -25,14 +25,15 @@ type saveResult struct {
 	Err     error
 }
 type loadRequest struct {
-	SourceKey     int
-	Generation    uint64
-	SourceID      int
-	SourceVersion uint64
-	TargetID      int
-	Trash         bool
-	Reload        bool
-	Match         *Note
+	SourceKey            int
+	Generation           uint64
+	SourceID             int
+	SourceVersion        uint64
+	PurgedSourceRevision int64 // confirmed deletion; never discard a newer or dirty source
+	TargetID             int
+	Trash                bool
+	Reload               bool
+	Match                *Note
 }
 type loadResult struct {
 	Request loadRequest
@@ -239,14 +240,21 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 }
 
 func (m *model) requestOpen(id int, trash bool, match *Note, reload bool) tea.Cmd {
-	m.stashNote()
-	m.openGeneration++
-	m.loadPending = true
-	r := loadRequest{SourceKey: m.activeKey(), Generation: m.openGeneration, SourceID: m.activeID(), SourceVersion: m.localVersion, TargetID: id, Trash: trash, Reload: reload}
+	r := loadRequest{TargetID: id, Trash: trash, Reload: reload}
 	if match != nil {
 		n := cloneNote(*match)
 		r.Match = &n
 	}
+	return m.requestLoad(r)
+}
+func (m *model) requestLoad(r loadRequest) tea.Cmd {
+	if r.PurgedSourceRevision == 0 {
+		m.stashNote()
+	}
+	m.openGeneration++
+	m.loadPending = true
+	r.SourceKey, r.SourceID, r.SourceVersion = m.activeKey(), m.activeID(), m.localVersion
+	r.Generation = m.openGeneration
 	store := m.store
 	return func() tea.Msg {
 		notes, err := store.ListChecked(r.Trash)
@@ -297,12 +305,17 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 		}
 		return nil
 	}
-	m.stashNote()
 	// A newer summary proves this full read is stale, but does not supply the
 	// corresponding content. Refetch both content and revision in one snapshot.
 	known := m.latestLifecycleSnapshot(msg.Note)
 	if known.Revision > msg.Note.Revision {
-		return m.requestOpen(msg.Note.ID, known.DeletedAt != "", r.Match, r.Reload)
+		r.TargetID, r.Trash = msg.Note.ID, known.DeletedAt != ""
+		return m.requestLoad(r)
+	}
+	if r.PurgedSourceRevision > 0 && !m.needsSave && m.Note.Revision <= r.PurgedSourceRevision {
+		delete(m.drafts, r.SourceKey)
+	} else {
+		m.stashNote()
 	}
 	for i := range msg.Notes {
 		msg.Notes[i] = m.latestLifecycleSnapshot(msg.Notes[i])
@@ -578,6 +591,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clampDraftCursor()
 		m.updateEditorScroll()
+		m.clampTrashScroll()
 		m.syncSummary()
 		return m, cmd
 	}
@@ -689,6 +703,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.Update(ActionMsg{a.ID})
 			}
 		}
+		m.clampTrashScroll()
 		return m, nil
 	}
 	beforeCursor := textState{m.buffer.Text(), m.cursorRow, m.cursorCol}
@@ -722,6 +737,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.clampDraftCursor()
 	m.updateEditorScroll()
+	m.clampTrashScroll()
 	m.syncSummary()
 	return m, cmd
 }

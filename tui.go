@@ -419,10 +419,12 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 					delta = -1
 				}
 				if msg.String() == "pgup" {
-					delta = -max(1, m.layout().Height-4)
+					_, height := m.trashPreview()
+					delta = -max(1, height)
 				}
 				if msg.String() == "pgdown" {
-					delta = max(1, m.layout().Height-4)
+					_, height := m.trashPreview()
+					delta = max(1, height)
 				}
 				m.viewport.YOffset = max(0, m.viewport.YOffset+delta)
 			}
