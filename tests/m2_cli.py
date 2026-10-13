@@ -231,6 +231,49 @@ def migration_refusal(home):
     check(home.snapshot() == before, "unsupported-schema refusal changed notes/revisions/tags/FTS/version")
 
 
+def mixed_timestamp_append(home, titled=False):
+    title = "Synthetic mixed timestamp title"
+    newer_id = home.seed("# " + title + "\n\nnewer legacy #newer")
+    older_id = home.seed("# " + title + "\n\nolder canonical #older")
+    yesterday = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0)
+    with home.db() as db:
+        db.execute("UPDATE notes SET updated_at=? WHERE id=?",
+                   (yesterday.strftime("%Y-%m-%d %H:%M:%S"), newer_id))
+        db.execute("UPDATE notes SET updated_at=? WHERE id=?",
+                   (utcstamp(yesterday - dt.timedelta(hours=1)), older_id))
+    newer, older = home.note(newer_id), home.note(older_id)
+    snapshot = home.snapshot()
+    append = "sentinel append #appended"
+    home.run("-q", "-t", title, "-n", append) if titled else home.run("-q", "-l", "-n", append)
+    updated = home.note(newer_id)
+    check(updated["content"] == newer["content"] + "\n" + append,
+          "mixed-format append did not target the chronologically newer legacy ID")
+    check(updated["revision"] == newer["revision"] + 1,
+          "mixed-format append did not advance the newer ID exactly once")
+    check(home.note(older_id) == older, "mixed-format append changed the non-target note snapshot")
+    with home.db() as db:
+        check(db.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 2, "mixed-format append inserted/deleted a note")
+        check({r[0] for r in db.execute("SELECT tag FROM tags WHERE note_id=?", (newer_id,))} == {"#newer", "#appended"},
+              "mixed-format append did not preserve/update target tags")
+        check(db.execute("SELECT content FROM notes_fts WHERE rowid=?", (newer_id,)).fetchone()[0] == updated["content"],
+              "mixed-format append target FTS content differs")
+    after = home.snapshot()
+    check(after[0] == snapshot[0] and
+          tuple(r for r in after[2] if r[0] == older_id) == tuple(r for r in snapshot[2] if r[0] == older_id) and
+          tuple(r for r in after[3] if r[0] == older_id) == tuple(r for r in snapshot[3] if r[0] == older_id),
+          "mixed-format append changed schema/non-target tags/FTS")
+    home.healthy()
+
+
+def mixed_last_append(home):
+    mixed_timestamp_append(home)
+
+
+def mixed_title_append(home):
+    mixed_timestamp_append(home, titled=True)
+
+
 def directive_deadline(home):
     start = dt.datetime.now(dt.timezone.utc)
     note_id = home.seed("synthetic timer\n#kill 1 hour")
@@ -289,6 +332,8 @@ def maintenance_failure(home):
 
 BASELINE = [("quiet stdin/last append/revisions", quiet_capture),
             ("title append/identity", title_append),
+            ("mixed timestamp latest append/identity", mixed_last_append),
+            ("mixed timestamp title append/identity", mixed_title_append),
             ("write failure/atomic retry", write_failure),
             ("tag failure/atomic rollback", tag_failure),
             ("unsupported migration refusal", migration_refusal)]
