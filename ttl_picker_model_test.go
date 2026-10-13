@@ -500,3 +500,72 @@ func TestQN029ReviewLongCustomFocusAfterTypingPasteResize(t *testing.T) {
 		})
 	}
 }
+
+func TestQN029ReviewQueuedTTLWaitsForExit(t *testing.T) {
+	m, a, _, n, _ := ttlModel(t)
+	m = ttlReview(t, m, 0)
+	m = updateTest(t, m, keyMessage("tab"))
+	m, first := rawUpdate(m, keyMessage("enter"))
+	m = ttlReview(t, m, 5)
+	m = updateTest(t, m, keyMessage("tab"))
+	m = updateTest(t, m, keyMessage("enter"))
+	exit := keyMessage("esc")
+	m.pendingAction = &exit
+	m.pendingActionID = m.activeKey()
+	if m.finishExit() != nil {
+		t.Fatal("quit before first acknowledgment")
+	}
+	m, second := rawUpdate(m, first())
+	if second == nil || m.finishExit() != nil || len(m.lifecycleRequests) != 1 {
+		t.Fatal("quit between queued TTL writes")
+	}
+	m, quit := rawUpdate(m, second())
+	stored, e := a.GetNote(n.ID)
+	if e != nil || stored.ExpiresAt.Valid || stored.Revision != n.Revision+2 || quit == nil {
+		t.Fatal("exit did not wait for final metadata", stored, e)
+	}
+	if _, ok := quit().(tea.QuitMsg); !ok {
+		t.Fatal("safe exit unavailable after final acknowledgment")
+	}
+}
+func TestQN029ReviewQueuedTTLSourceGuardsAndConflict(t *testing.T) {
+	for _, change := range []string{"edit", "switch", "conflict"} {
+		t.Run(change, func(t *testing.T) {
+			m, a, b, n, other := ttlModel(t)
+			m = ttlReview(t, m, 0)
+			m = updateTest(t, m, keyMessage("tab"))
+			m, first := rawUpdate(m, keyMessage("enter"))
+			result := first().(lifecycleResult)
+			m = ttlReview(t, m, 5)
+			m = updateTest(t, m, keyMessage("tab"))
+			m = updateTest(t, m, keyMessage("enter"))
+			switch change {
+			case "edit":
+				m = typeTest(m, " newest")
+			case "switch":
+				m = drainTestCmd(t, m, m.requestOpen(other.ID, false, nil, false))
+			case "conflict":
+				remote := result.Note
+				remote.Content = "external newest"
+				if _, e := b.Save(remote); e != nil {
+					t.Fatal(e)
+				}
+			}
+			text := m.buffer.Text()
+			m = updateTest(t, m, result)
+			stored, e := a.GetNote(n.ID)
+			if e != nil || !stored.ExpiresAt.Valid || m.buffer.Text() != text {
+				t.Fatal("queued source/metadata overwritten", stored, e)
+			}
+			if change == "edit" && stored.Content != text {
+				t.Fatal("newest edit lost")
+			}
+			if change == "switch" && m.activeID() != other.ID {
+				t.Fatal("source switch lost")
+			}
+			if change == "conflict" && (!errors.Is(m.saveErr, ErrConflict) || stored.Content != "external newest") {
+				t.Fatal("conflict not preserved", stored, m.saveErr)
+			}
+		})
+	}
+}
