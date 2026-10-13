@@ -1,9 +1,9 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: b4d606febd2217c5eaf00d0fbeab8acb03715e98
+Latest implementation SHA: f2bbf919e3beb672f2169567712705b0643b9119
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-031 REVIEW on qn-v2/QN-031-ghosts; QN-032 follows coordinator acceptance (approved M2 execution)
+Current task: QN-031 DONE; QN-032 next (approved M2 execution)
 Updated: 2026-10-13 UTC
 
 ## Completed repository changes
@@ -645,3 +645,28 @@ Final gates **PASSED**, using `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache`:
 - `gofmt -l ghost.go ghost_model_test.go` — no output; scoped GitButler diff review and added-line whitespace/conflict-marker audit pass.
 
 Changed files: `ghost.go`, `ghost_model_test.go`, ledger/handoff. No new interface/controller/queue/schema change; schema **3**. **NOT RUN:** human terminal/real clipboard/platform matrix, remote CI, benchmarks. Existing privacy/output limits remain; no final failing acceptance or blocker. Reviewed commits, real notes, main and pre-existing user files remain untouched; no integration/push. Coordinator owns re-review/DONE. QN-032 follows acceptance; manual `ghostTrash` acknowledgment hooks remain as previously documented.
+
+## QN-031 accepted and integrated — 2026-10-13 UTC
+
+**DONE**, schema **3**, specification **1.1.0**. Independently reviewed source commits `abfe7bb306fa585ae30fc35074e5dc8f795211cf`, `ef8e3e2e3c0efd5b18d10aecd1f79c74b3055ed1`, `06ea82d1f35c89bd9cb8635efd6c91d5ec12856f` were copied append-only to `dev/v2` as **`9bd2630add832202743a0a835a29a685c66b0647`**, **`76379fe9eed555c6d1a72930fc8ee3625f23f994`**, **`f2bbf919e3beb672f2169567712705b0643b9119`** using GitButler setup, explicit teardown to dev/v2, and selected commit picks. Agent source branch/history remains intact; main and pre-existing user files were not changed.
+
+New Ghost allocates memory identity before edits; safe conversion keeps the original or explicitly moves it to 72-hour Trash. Ghost content has no implicit SQLite/FTS/autosave/maintenance persistence. Discard removes owned session/history/preview references. Persistence, clipboard and export each require identity-guarded default-Cancel confirmation. Explicit empty persistence inserts one row and remains retryable on failure. README documents external-copy/OS limits without promising secure erasure.
+
+Two independent reviews approved after two correction rounds. Public save-gated transitions now cancel unstarted conversion, remap unsaved ownership and preserve started writes as inactive captured ghosts while honoring navigation. Both unavailable-arrow boundaries retain latest source/history and dirty Trash recovery; appended ghosts cannot become accidental pending-navigation targets. Forty-four faithful public-key regression cases cover these ordering edges.
+
+Final worker gates **PASSED**, with `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache`:
+- `go test -tags sqlite_fts5 -count=1 ./...` —18.004s.
+- `go test -tags sqlite_fts5 -race -count=1 ./...` —25.372s.
+- `go vet -tags sqlite_fts5 ./...` —exit0.
+- `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn031-bin .` —normal primary build, exit0.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestQN031|TestQN029(Queue|Canceled|Continuation|ReviewQueued)|TestQN017GhostConfirmation' .` —26.448s.
+- Six-size default/legacy/custom layout snapshots, gofmt/scoped GitButler whitespace checks, synthetic SQLite/tags/FTS/files/log sentinel audit and clipboard shim checks.
+- Rebuilt binary PTY **4/4** held-save public-navigation cases plus **8/8** privacy/conversion/cancel/output/empty-persistence/restart cases. Independent reviewer right-boundary reproduction PASSED0.010s.
+
+**FAILED during development:** original navigation review reproduction and right-boundary reproduction, then fixed and rerun green. No final failing acceptance. **NOT RUN:** human Fedora/Zsh/Kitty/tmux/real-clipboard checks, remote CI, benchmarks. No real notes, production migration/backup or retention operation. Already-dispatched explicitly confirmed output can finish externally; discard does not undo prior output.
+
+**Publication deviation:** the previous GitButler `but push dev/v2` advanced dev/v2 and also created `origin/qn-v2/QN-028-durable-ttl` at `869a7d0e17c50d94b60f72dcdcae57bc421189af`, despite its dry run listing only dev/v2. The extra ref contains already-published dev commits. Disclosed to the maintainer; installed GitButler has no documented safe remote-ref deletion or ancestor-exclusion command. No raw Git/API workaround or main-target land was used. The extra remote ref remains; explicit dev pushes must inspect actual output.
+
+**Next:** QN-032 Trash restore/undo/permanent deletion. Record metadata-only Undo for successful manual `trash` and `ghostTrash` acknowledgments, including late successes with inactive ghosts. Preserve CAS bases/newest draft recovery. Complete approved M2 and final milestone gates; do not start unrelated M3 work yet.
+
+Coordinator integrated-tree checks **PASSED**: `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache go test -tags sqlite_fts5 -count=1 -run 'TestQN031|TestQN017GhostConfirmation' .` —1.313s; `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn031-integrated .` —exit0, normal build. Full/race were not redundantly rerun on these byte-identical integrated Go files; final M2 gates remain required after QN-032.
