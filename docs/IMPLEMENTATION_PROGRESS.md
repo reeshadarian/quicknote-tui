@@ -625,3 +625,23 @@ Final correction gates **PASSED** (all Go commands use `CGO_ENABLED=1 GOCACHE=/t
 - Four changed Go files are gofmt-clean; scoped GitButler diffs inspected for whitespace/conflict markers (no Git commands).
 
 **Environment failure:** the first overlay invocation with default Go cache could not write to the read-only cache; all subsequent correction gates used the writable task cache above. **NOT RUN:** human Fedora/Zsh/Kitty/tmux/real-clipboard matrix, remote CI and benchmarks. No final acceptance failure remains. Changed files: `ghost.go`, `ghost_model_test.go`, `tui_async.go`, `tui_lifecycle.go`, ledger and handoff. Schema stays **3**; no migrations, production notes, main, pushes or integration. QN-032 remains next after coordinator acceptance; its manual-Trash undo hook must still acknowledge successful `ghostTrash` writes even when the resulting ghost stays inactive.
+
+### QN-031 review correction 2 — retain the original navigation boundary (2026-10-13 UTC)
+
+**REVIEW**, branch `qn-v2/QN-031-ghosts`, base `ef8e3e2e3c0efd5b18d10aecd1f79c74b3055ed1`; separate correction commit containing this entry, immutable SHA in task-4-report.md. The independent re-review found that appending the inactive captured ghost enlarged the list before the pending right-boundary check. Both Keep and Trash could therefore activate that ghost for an earlier Alt+Right that had no destination. `completeGhostConversion` now resolves unavailable pending arrows against the list before appending; existing available neighbor identities remain unchanged. The late check in the continuation helper is removed. Keep can finish its newer ordinary source save without subsequently navigating to the appended ghost; Trash retains active conflict recovery. Captured text and newer source text/history remain distinct.
+
+**RED/GREEN:** fresh full baseline passed 17.996s. Independent right-boundary overlay reproduced failure 0.011s (`active=0`, ghost active, dirty source recovery inactive). Expanded boundary matrix failed 0.017s for Keep and Trash right boundaries while both left cases passed. After the fix, all 44 public-key review cases passed 0.110s; the independent overlay passed 0.011s with the original active, conflict state and `needsSave=true`. Four boundary cases assert source identity/text/history, successful store metadata, ordinary-save or conflict outcome, exactly one inactive captured ghost, and cleared pending continuation.
+
+Final gates **PASSED**, using `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache`:
+
+- `go test -tags sqlite_fts5 -count=1 ./...` — 18.004s.
+- `go test -tags sqlite_fts5 -race -count=1 ./...` — 25.372s.
+- `go vet -tags sqlite_fts5 ./...` — exit 0.
+- `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn031-bin .` — exit 0, normal primary build without fallback.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestQN031|TestQN029(Queue|Canceled|Continuation|ReviewQueued)|TestQN017GhostConfirmation' .` — 26.448s.
+- `go test -tags sqlite_fts5 -count=1 -v -run TestQN031KeyboardAndLayouts . > /tmp/qn031-rereview-layout-snapshots.txt` — exit 0, default/legacy/custom and six sizes.
+- `python3 /tmp/qn031-review-pty.py` — 4/4 held real SQLite source-save/public-navigation cases, Keep/Trash in default/legacy.
+- `python3 /tmp/qn031-pty.py` — 8/8 task privacy/output/creation/conversion/persistence/resize/restart cases on the rebuilt binary, default/legacy, synthetic HOME only.
+- `gofmt -l ghost.go ghost_model_test.go` — no output; scoped GitButler diff review and added-line whitespace/conflict-marker audit pass.
+
+Changed files: `ghost.go`, `ghost_model_test.go`, ledger/handoff. No new interface/controller/queue/schema change; schema **3**. **NOT RUN:** human terminal/real clipboard/platform matrix, remote CI, benchmarks. Existing privacy/output limits remain; no final failing acceptance or blocker. Reviewed commits, real notes, main and pre-existing user files remain untouched; no integration/push. Coordinator owns re-review/DONE. QN-032 follows acceptance; manual `ghostTrash` acknowledgment hooks remain as previously documented.

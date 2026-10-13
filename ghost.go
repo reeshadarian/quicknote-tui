@@ -54,6 +54,15 @@ func (m *model) openGhostConfirmation() {
 }
 func (m *model) completeGhostConversion(r lifecycleRequest) {
 	unchanged := m.activeKey() == r.Key && m.localVersion == r.Version && m.pendingAction == nil && !m.loadPending && !isOverlay(m.state)
+	// Resolve an unavailable arrow against the original list. Appending the
+	// captured ghost must not create a destination for an already-pending key,
+	// including a continuation that will resume after a newer source save.
+	if m.pendingAction != nil && m.pendingActionID == r.Key && m.activeKey() == r.Key {
+		key := m.pendingAction.String()
+		if (key == "alt+left" && m.index == 0) || (key == "alt+right" && m.index+1 >= len(m.notes)) {
+			m.pendingAction = nil
+		}
+	}
 	m.addGhostDraft(r.Intent.GhostContent, unchanged)
 	if unchanged {
 		m.flashMsg = "Ghost · unsaved by design"
@@ -71,12 +80,6 @@ func (m *model) resumeGhostTransition(r lifecycleRequest) tea.Cmd {
 		key := *m.pendingAction
 		if m.Note.DeletedAt != "" {
 			m.pendingAction = nil
-			if (key.String() == "alt+left" && m.index == 0) || (key.String() == "alt+right" && m.index+1 >= len(m.notes)) {
-				if m.needsSave || m.saveErr != nil {
-					return m.requestConflictRead()
-				}
-				return nil
-			}
 			m.clearOverlays(stateTyping)
 			return m.runAction(key)
 		}

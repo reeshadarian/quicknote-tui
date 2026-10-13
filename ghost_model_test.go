@@ -688,19 +688,57 @@ func TestQN031ReviewStartedConversionPreservesPendingTransition(t *testing.T) {
 	}
 }
 
-func TestQN031ReviewStartedTrashRetainsRecoveryAtNavigationBoundary(t *testing.T) {
-	m, _, _, _, _ := asyncModel(t)
-	m = updateTest(t, m, keyMessage("ctrl+g"))
-	m = updateTest(t, m, keyMessage("tab"))
-	m = updateTest(t, m, keyMessage("tab"))
-	m, held := rawUpdate(m, keyMessage("enter"))
-	result := held().(lifecycleResult)
-	m = typeTest(m, " newer")
-	text, history := m.buffer.Text(), len(m.undoStack)
-	m, _ = rawUpdate(m, keyMessage("alt+left"))
-	m, ack := rawUpdate(m, result)
-	m, quit := drainGhostReviewCmd(t, m, ack)
-	if quit || m.state != stateConflict || m.buffer.Text() != text || len(m.undoStack) != history || !m.needsSave {
-		t.Fatal("unavailable navigation bypassed dirty source recovery", m.state)
+func TestQN031ReviewStartedConversionRetainsOriginalNavigationBoundary(t *testing.T) {
+	for _, choice := range []int{1, 2} {
+		for _, key := range []string{"alt+left", "alt+right"} {
+			t.Run(fmt.Sprintf("choice=%d/%s", choice, key), func(t *testing.T) {
+				m, a, _, _, _ := asyncModel(t)
+				if key == "alt+right" {
+					m.index = len(m.notes) - 1
+					m.activateNote()
+				}
+				source, captured := m.activeID(), m.buffer.Text()
+				m = updateTest(t, m, keyMessage("ctrl+g"))
+				for i := 0; i < choice; i++ {
+					m = updateTest(t, m, keyMessage("tab"))
+				}
+				m, held := rawUpdate(m, keyMessage("enter"))
+				result := held().(lifecycleResult)
+				if result.Err != nil {
+					t.Fatal(result.Err)
+				}
+				m = typeTest(m, " newer")
+				text, history := m.buffer.Text(), len(m.undoStack)
+				m, nav := rawUpdate(m, keyMessage(key))
+				if nav != nil {
+					t.Fatal("transition bypassed running conversion")
+				}
+				m, ack := rawUpdate(m, result)
+				m, quit := drainGhostReviewCmd(t, m, ack)
+				if quit || m.activeID() != source || m.Note.IsGhost || m.buffer.Text() != text || len(m.undoStack) != history {
+					t.Fatal("captured ghost changed the original navigation boundary", m.activeID(), source, m.state)
+				}
+				stored, err := a.GetNote(source)
+				if err != nil || (stored.DeletedAt != "") != (choice == 2) {
+					t.Fatal("conversion acknowledgment not reconciled", err)
+				}
+				if choice == 2 {
+					if m.state != stateConflict || !m.needsSave {
+						t.Fatal("unavailable navigation bypassed dirty source recovery", m.state)
+					}
+				} else if m.state != stateTyping || m.needsSave || stored.Content != text {
+					t.Fatal("unavailable navigation failed ordinary source save")
+				}
+				ghosts := 0
+				for _, note := range m.notes {
+					if note.IsGhost && note.Content == captured {
+						ghosts++
+					}
+				}
+				if ghosts != 1 || m.pendingAction != nil || len(m.lifecycleRequests) != 0 || len(m.saves) != 0 {
+					t.Fatal("captured ghost or continuation ownership lost", ghosts)
+				}
+			})
+		}
 	}
 }
