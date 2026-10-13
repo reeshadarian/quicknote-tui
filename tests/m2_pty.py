@@ -466,6 +466,13 @@ def expiration_picker(home):
         terminal.four_sizes()
         terminal.cancel_default()
         check(home.snapshot() == before, "default-Cancel TTL choice changed persisted metadata")
+        # Confirmation Cancel restores its parent picker, preserving selection.
+        # Escape then closes that one layer before Commands is available again.
+        terminal.wait(lambda: re.match(r"15 minutes", terminal.selected(), re.I) is not None,
+                      "selected preset restored after default Cancel")
+        terminal.key(ESC)
+        terminal.wait(lambda: "synthetic picker" in terminal.screen.text,
+                      "editor restored after picker Escape")
         terminal.action(r"^Set expiration", "Set expiration")
         terminal.select(r"15 minutes", "15-minute preset")
         terminal.key(ENTER)
