@@ -155,6 +155,12 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 	}
 	key := m.activeKey()
 	if _, busy := m.lifecycleRequests[key]; busy {
+		if intent.GuardTTL {
+			if m.lifecycleQueued == nil {
+				m.lifecycleQueued = map[int]lifecycleIntent{}
+			}
+			m.lifecycleQueued[key] = intent
+		}
 		return nil
 	}
 	m.stashNote()
@@ -253,6 +259,7 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		return nil
 	}
 	if msg.Err != nil {
+		delete(m.lifecycleQueued, r.Key)
 		m.pendingAction = nil
 		d.saveErr = msg.Err
 		m.drafts[r.Key] = d
@@ -305,6 +312,9 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 			return m.requestSave()
 		}
 		return m.saveSnapshot(d.Note, d.localVersion)
+	}
+	if intent, queued := m.lifecycleQueued[r.Key]; queued {
+		return m.startLifecycle(r.Key, d, intent)
 	}
 	return m.finishExit()
 }

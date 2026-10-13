@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"reflect"
@@ -396,5 +399,104 @@ func TestQN029MetadataPendingStatus(t *testing.T) {
 	m = drainTestCmd(t, m, cmd)
 	if strings.Contains(m.flashMsg, "Setting expiration") {
 		t.Fatal("stale pending toast after success")
+	}
+}
+
+func TestQN029ReviewBracketedPasteAndCallbacks(t *testing.T) {
+	m, a, _, n, _ := ttlModel(t)
+	m = updateTest(t, m, ActionMsg{"ttl.set"})
+	m.ttlPicker.Index = 6
+	m = updateTest(t, m, keyMessage("enter"))
+	value := "2026-11-01T01:30:00-07:00"
+	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value), Paste: true})
+	if m.ttlPicker.Input.Value() != value {
+		t.Fatalf("paste bytes changed: %q", m.ttlPicker.Input.Value())
+	}
+	// Generate the library's private clipboard-error callback with clipboard I/O
+	// disabled, then verify it reaches this input rather than the editor.
+	unsupported := clipboard.Unsupported
+	clipboard.Unsupported = true
+	callback := textinput.Paste()
+	clipboard.Unsupported = unsupported
+	m, _ = rawUpdate(m, callback)
+	if m.ttlPicker.Input.Err == nil {
+		t.Fatal("clipboard callback not forwarded")
+	}
+	m, _ = rawUpdate(m, tea.BlurMsg{})
+	if !m.ttlPicker.Input.Cursor.Blink {
+		t.Fatal("blur callback not forwarded")
+	}
+	m, _ = rawUpdate(m, tea.FocusMsg{})
+	if m.ttlPicker.Input.Cursor.Blink {
+		t.Fatal("focus callback not forwarded")
+	}
+	_, cmd := rawUpdate(m, cursor.Blink())
+	if cmd == nil {
+		t.Fatal("blink callback not forwarded")
+	}
+	m = updateTest(t, m, keyMessage("enter"))
+	m = updateTest(t, m, keyMessage("tab"))
+	m = updateTest(t, m, keyMessage("enter"))
+	stored, e := a.GetNote(n.ID)
+	if e != nil || stored.ExpiresAt.String != "2026-11-01T08:30:00.000Z" || stored.Content != n.Content {
+		t.Fatal(stored, e)
+	}
+}
+func TestQN029ReviewSecondConfirmedChoiceSerialized(t *testing.T) {
+	for _, holdResult := range []bool{false, true} {
+		t.Run(fmt.Sprint(holdResult), func(t *testing.T) {
+			m, a, _, n, _ := ttlModel(t)
+			m = ttlReview(t, m, 0)
+			m = updateTest(t, m, keyMessage("tab"))
+			m, first := rawUpdate(m, keyMessage("enter"))
+			var result tea.Msg
+			if holdResult {
+				result = first()
+			}
+			m = ttlReview(t, m, 5)
+			if m.state != stateConfirm {
+				t.Fatal("second choice not reviewed")
+			}
+			m = updateTest(t, m, keyMessage("tab"))
+			m = updateTest(t, m, keyMessage("enter"))
+			if holdResult {
+				m = updateTest(t, m, result)
+			} else {
+				m = drainTestCmd(t, m, first)
+			}
+			stored, e := a.GetNote(n.ID)
+			if e != nil || stored.ExpiresAt.Valid || stored.ExpirationSource != ExpirationNone || stored.Revision != n.Revision+2 || stored.Content != n.Content || m.state != stateTyping || m.flashMsg != "Expiration updated" {
+				t.Fatal("second confirmed Never was not applied", stored, e, m.flashMsg)
+			}
+		})
+	}
+}
+func TestQN029ReviewLongCustomFocusAfterTypingPasteResize(t *testing.T) {
+	value := strings.Repeat("1m", 59) + "2h"
+	for _, paste := range []bool{false, true} {
+		t.Run(fmt.Sprint(paste), func(t *testing.T) {
+			m, _, _, _, _ := ttlModel(t)
+			m = updateTest(t, m, tea.WindowSizeMsg{Width: 25, Height: 5})
+			m = updateTest(t, m, ActionMsg{"ttl.set"})
+			m.ttlPicker.Index = 6
+			m = updateTest(t, m, keyMessage("enter"))
+			if paste {
+				m, _ = rawUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value), Paste: true})
+			} else {
+				for _, r := range value {
+					m, _ = rawUpdate(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				}
+			}
+			for _, size := range [][2]int{{25, 5}, {120, 40}, {80, 24}, {50, 12}, {25, 5}} {
+				m = updateTest(t, m, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+				v := m.View()
+				if m.ttlPicker.Input.Value() != value || m.ttlPicker.Input.Position() != len(value) || !strings.Contains(v, "2h") || lipgloss.Width(m.ttlPicker.Input.View()) > size[0] {
+					t.Fatalf("input value/focus hidden %v: %q\n%s", size, m.ttlPicker.Input.Value(), v)
+				}
+			}
+			if _, e := ResolveTTLInput(m.ttlPicker.Input.Value(), m.timerNow, time.Local); e != nil {
+				t.Fatal(e)
+			}
+		})
 	}
 }

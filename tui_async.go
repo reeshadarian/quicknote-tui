@@ -579,6 +579,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if _, old := actionForKey(key.String(), m.actionContext()); old {
 			return m, nil
 		}
+		if m.state == stateTTLCustom && key.String() != "esc" && key.String() != "ctrl+c" && key.String() != "enter" {
+			cmd := m.ttlInputMessage(key)
+			return m, cmd
+		}
 		cmd := m.ttlPickerKey(key.String())
 		return m, cmd
 	}
@@ -661,6 +665,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	beforeID, beforeContent := m.activeKey(), bufferToString(m.buffer)
 	var cmd tea.Cmd
 	m, cmd = m.updateAsync(msg)
+	if m.state == stateTTLCustom {
+		cmd = tea.Batch(cmd, m.ttlInputMessage(msg))
+	}
 	_, keyEdit := msg.(tea.KeyMsg)
 	if keyEdit && m.activeKey() == beforeID && bufferToString(m.buffer) != beforeContent {
 		key := msg.(tea.KeyMsg)

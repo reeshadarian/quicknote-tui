@@ -125,6 +125,7 @@ func (m *model) openTTLPicker() tea.Cmd {
 	input.Prompt = "Custom: "
 	input.CharLimit = 120
 	m.ttlPicker = TTLPicker{Input: input, Key: m.activeKey(), Version: m.localVersion, Location: time.Local}
+	m.resizeTTLInput()
 	m.timerNow = m.ttlNow()
 	m.pushOverlay(stateTTLPicker)
 	return nil
@@ -186,12 +187,28 @@ func (m *model) ttlPickerKey(key string) tea.Cmd {
 		return nil
 	}
 	if m.state == stateTTLCustom {
-		var cmd tea.Cmd
-		m.ttlPicker.Input, cmd = m.ttlPicker.Input.Update(keyMessage(key))
-		m.ttlPicker.Error = ""
-		return cmd
+		return m.ttlInputMessage(keyMessage(key))
 	}
 	return nil
+}
+
+func (m *model) resizeTTLInput() {
+	// Reserve the prompt and one cursor cell; the input scrolls horizontally
+	// rather than wrapping its tail and focus into clipped panel rows.
+	m.ttlPicker.Input.Width = max(1, m.layout().Width-ansi.StringWidth(m.ttlPicker.Input.Prompt)-1)
+	m.ttlPicker.Input.SetCursor(m.ttlPicker.Input.Position())
+}
+
+// Pass textinput events intact: KeyMsg.String is a display label, not payload.
+func (m *model) ttlInputMessage(msg tea.Msg) tea.Cmd {
+	m.resizeTTLInput()
+	before := m.ttlPicker.Input.Value()
+	var cmd tea.Cmd
+	m.ttlPicker.Input, cmd = m.ttlPicker.Input.Update(msg)
+	if m.ttlPicker.Input.Value() != before {
+		m.ttlPicker.Error = ""
+	}
+	return cmd
 }
 func (m *model) confirmTTL(c Confirmation) tea.Cmd {
 	if m.ttlPicker.Key != m.activeKey() || m.ttlPicker.Version != m.localVersion || m.Note.DeletedAt != "" {
