@@ -100,14 +100,16 @@ func persistCLIInputWithStore(db *sql.DB, store NoteStore, content, title string
 	if content == "" {
 		return nil
 	}
+	// Legacy SQLite timestamps and lifecycle RFC3339 timestamps coexist;
+	// compare their UTC instants before using the stable ID to break ties.
 	var id int
 	if last {
-		err := db.QueryRow("SELECT id FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1").Scan(&id)
+		err := db.QueryRow("SELECT id FROM notes WHERE deleted_at IS NULL ORDER BY julianday(updated_at) DESC, id DESC LIMIT 1").Scan(&id)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("lookup recent note: %w", err)
 		}
 	} else if title != "" {
-		rows, err := db.Query("SELECT id,content FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC")
+		rows, err := db.Query("SELECT id,content FROM notes WHERE deleted_at IS NULL ORDER BY julianday(updated_at) DESC, id DESC")
 		if err != nil {
 			return fmt.Errorf("lookup titled note: %w", err)
 		}

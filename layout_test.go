@@ -87,7 +87,12 @@ func TestQN016RenderingNeutralizesControlsWithoutChangingData(t *testing.T) {
 	}
 }
 func TestQN016ValidViewportSurvivesNavigation(t *testing.T) {
-	m, _, _, first, second := asyncModel(t)
+	m, store, _, first, second := asyncModel(t)
+	// A's save must sort before B for the positional right/left round trip.
+	if _, err := store.db.Exec("UPDATE notes SET updated_at='2026-10-10 12:00:00' WHERE id=?", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.store = NewSQLiteStoreWithClock(store.db, fixedClock{nowForTest()})
 	m = updateTest(t, m, tea.WindowSizeMsg{Width: 80, Height: 4})
 	m.buffer = stringToBuffer(strings.Repeat("line\n", 20))
 	m.cursorRow, m.cursorCol = 6, 1

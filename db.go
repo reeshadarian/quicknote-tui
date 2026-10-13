@@ -199,15 +199,17 @@ func loadNotes(db *sql.DB, inTrash bool) []Note {
 }
 
 func loadNotesChecked(db *sql.DB, inTrash bool) ([]Note, error) {
+	// Compare legacy and RFC3339 timestamps at their stored millisecond precision.
+	// Reading a list must not rewrite preserved historical timestamp bytes.
 	var query string
 	if inTrash {
 		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, n.revision, n.expires_at, n.is_pinned,n.expiration_source,n.expiration_needs_review,n.delete_reason, GROUP_CONCAT(t.tag)
 				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id
-				 WHERE n.deleted_at IS NOT NULL GROUP BY n.id ORDER BY n.deleted_at DESC`
+				 WHERE n.deleted_at IS NOT NULL GROUP BY n.id ORDER BY julianday(n.deleted_at) DESC, n.id DESC`
 	} else {
 		query = `SELECT n.id, SUBSTR(n.content, 1, 200), n.updated_at, n.created_at, n.deleted_at, n.kill_hash, n.kill_start, n.revision, n.expires_at, n.is_pinned,n.expiration_source,n.expiration_needs_review,n.delete_reason, GROUP_CONCAT(t.tag)
 				 FROM notes n LEFT JOIN tags t ON n.id = t.note_id
-				 WHERE n.deleted_at IS NULL GROUP BY n.id ORDER BY n.updated_at DESC`
+				 WHERE n.deleted_at IS NULL GROUP BY n.id ORDER BY julianday(n.updated_at) DESC, n.id DESC`
 	}
 
 	rows, err := db.Query(query)

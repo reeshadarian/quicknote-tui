@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 	"testing"
+	"time"
 )
 
 // T-03: edit A, visit B, then return to A. History, cursor and viewport
@@ -12,8 +13,12 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	db := newTestDB(t)
 	a := insertTestNote(t, db, "alpha")
 	b := insertTestNote(t, db, "beta")
+	// This test navigates A then B by position. Give each write an explicit
+	// instant so the test does not rely on unspecified equal-timestamp order.
+	if _, err := db.Exec("UPDATE notes SET updated_at=? WHERE id=?", FormatLifecycleTime(nowForTest().Add(-time.Hour)), b); err != nil {
+		t.Fatal(err)
+	}
 	m := initialModel(db, nowForTest())
-	// Keep navigation order fixed while exercising histories; lifecycle writes now use millisecond precision.
 	m.store = NewSQLiteStoreWithClock(db, fixedClock{nowForTest()})
 	m.notes = []Note{mustGetTestNote(t, db, a), mustGetTestNote(t, db, b)}
 	m.index = 0
@@ -33,6 +38,7 @@ func TestQN003NoteSessionsRemainIsolated(t *testing.T) {
 	if m.needsSave {
 		t.Fatal("A dirty flag leaked into B")
 	}
+	m.store = NewSQLiteStoreWithClock(db, fixedClock{nowForTest().Add(-time.Hour)})
 	m.buffer = stringToBuffer("beta revised")
 	m.needsSave = true
 	m.cursorCol = 2

@@ -446,3 +446,24 @@ DONE on dev/v2: implementation `7c6d6c31093f3477e97a86b04a0e95ef627fca36`, revie
 Final implementer gates after the correction: full11.804s, race18.629s, vet, build(-buildvcs=false in isolated worktree), twenty lifecycle/CAS repetitions22.960s, synthetic CLI, diff/gofmt passed; exact commands are recorded above/in correction report. Coordinator ran `CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .` from the primary checkout: PASSED, resolving the isolated VCS-stamping limit. Independently prepared test harness at earlier fix4f32720 passed CLI8/8 and PTY foundation10/15; five scenarios explicitly await029–032UI, not full M2 acceptance. Periodic inactive expiry after editor readiness, locked-save typing/resize and externally-expired draft copy recovery passed. Reviewed scripts remain in a separate integration branch pending final UI alignment.
 
 Only synthetic DB/backup/restore fixtures were used. No production notes/backups or main changes; DB version3. Human Fedora/Kitty/tmux/clipboard, remote CI and performance checks remain NOT RUN. Next READY QN-029; continue all approved M2 tasks without stopping between them.
+
+### QN-028 compatibility correction — BUG-14 mixed timestamp ordering
+
+**REVIEW**, branch `qn-v2/QN-028-durable-ttl`, fast-forwarded to accepted dev/v2 `7dac1a29fa5f0cb3a79347eca2448fd9dd2794fb` before changes. Correction SHA is the commit containing this entry (coordinator records it at integration). Independent CLI reproduction showed a preserved legacy noon timestamp sorting below an older RFC3339 11:00 timestamp, directing quiet `-l` into the wrong note. Same-title append and active/Trash lists shared the defect.
+
+**Changed files:** `main.go`, `db.go`, new `timestamp_order_test.go`, explicit-time fixture corrections in `tui_session_test.go` and `layout_test.go`, this ledger. Exactly four production sort expressions now use `julianday(timestamp) DESC, id DESC` to compare UTC instants at stored millisecond precision with deterministic ID ties. Timestamp bytes, schema/indexes, CLI flags/stdout, content-save/CAS behavior, lifecycle policy and UI remain unchanged. New tests cover both append paths, active/Trash/empty-search lists, legacy/RFC3339/positive and negative offsets/day boundaries/milliseconds/equal instants; they verify non-target content/revisions/tags/timestamp bytes, selected FTS owner, FTS integrity and no extra note. Two positional navigation fixtures now use explicit timestamps; their identity/draft/history/cursor/viewport assertions are unchanged.
+
+**Exact verification:**
+
+- Baseline `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` PASSED (11.739s).
+- Red `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 -run TestQN028MixedTimestamp .` FAILED as expected (0.039s): wrong append owner and list order. Same command after four-query fix PASSED (0.041s).
+- First full run FAILED (11.775s) on two existing positional navigation fixtures that assumed unspecified timestamp ties; fixtures corrected as described above.
+- Final targeted `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 -run 'TestQN028MixedTimestamp|TestQN003NoteSessionsRemainIsolated|TestQN016ValidViewportSurvivesNavigation' .` PASSED (0.048s); same selection with `-count=20` PASSED (0.834s).
+- Final `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...` PASSED (11.789s).
+- Final `CGO_ENABLED=1 go test -tags sqlite_fts5 -race -count=1 ./...` PASSED (18.649s).
+- `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...` PASSED.
+- `CGO_ENABLED=1 go build -buildvcs=false -tags sqlite_fts5 -o /tmp/quicknote-m2-qn028-bin .` PASSED. Previously documented isolated-worktree VCS detection limit still applies; normal build will be coordinator-verified from root.
+- `python3 /tmp/qn028-ordering-cli.py` PASSED: final binary quiet `-l` and `-t` append only to chronologically newer legacy ID, preserve other row and all tags, correct FTS owner, integrity/FK/schema checks. `python3 /tmp/qn028-cli-check.py` PASSED: quiet directive create/append deadline stability and injected save-error rollback/nonzero stderr.
+- `git diff --check` PASSED; `gofmt -l main.go db.go timestamp_order_test.go tui_session_test.go layout_test.go` produced no filenames.
+
+**Limits/data:** only synthetic temporary fixtures; schema stays 3 and no timestamp migration or production DB/backup operations. No parser changes, so fuzz not repeated. Human terminal/platform checks, remote CI and release benchmarks NOT RUN. Expression sorting may require a temporary sort; no index/schema redesign is included. Review/integration remains coordinator-owned; next dependent task QN-029 after BUG-14 acceptance. No push, main or root product-code changes.
