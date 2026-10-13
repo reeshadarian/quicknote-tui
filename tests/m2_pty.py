@@ -309,6 +309,21 @@ class Terminal:
         self.key(TAB)
         self.key(ENTER)
 
+    def confirm_choice(self, pattern, label):
+        # Lifecycle choices use fixed modal Tab/left/right controls rather than
+        # menu Down navigation. Require Cancel initially and visibly select the
+        # explicit disposition before accepting it.
+        self.wait(lambda: re.match(r"Cancel(?:\s|$)", self.selected()) is not None,
+                  "initial Cancel for " + label)
+        for _ in range(3):
+            selected = self.selected()
+            if re.search(pattern, selected, re.I):
+                check(not re.match(r"Cancel(?:\s|$)", selected), "explicit disposition was still Cancel")
+                self.key(ENTER)
+                return
+            self.key(TAB)
+        raise CheckFailure("expected explicit confirmation choice absent for " + label)
+
     def finish(self):
         self.key(ESC)
         self.wait(lambda: self.process.poll() is not None, "clean TUI exit", timeout=8)
@@ -536,7 +551,7 @@ def assert_no_sentinel(home, sentinel):
 
 
 def new_ghost(home):
-    home.seed("synthetic persisted ghost neighbor")
+    home.seed("synthetic persisted ghost neighbor #persistedneighbor")
     before = home.snapshot()
     sentinel = "M2_GHOST_MEMORY_ONLY_SENTINEL_8be638f1"
     ghost_text = sentinel + " #ghostprivate\n#kill 1 second"
@@ -558,7 +573,29 @@ def new_ghost(home):
         terminal.pump(0.3)
         check(not home.clipboard_records(), "ghost Copy cancellation invoked a clipboard writer")
         terminal.action(r"^Export note", "ghost export warning")
+        # The export intent first asks for a filename and checks the filesystem;
+        # the ghost warning must precede every write, not the path prompt itself.
+        export_path = home.path / "canceled-ghost-export.md"
+        files_before_export = {p.relative_to(home.path) for p in home.path.rglob("*") if p.is_file()}
+        terminal.wait(lambda: "Export note" in terminal.screen.text, "ghost export filename prompt")
+        terminal.key(b"\x01")
+        terminal.key(b"\x0b")  # textinput Ctrl+K clears its default filename.
+        terminal.paste(str(export_path))
+        terminal.key(ENTER)
+        terminal.wait(lambda: "Export ghost outside Quicknote?" in terminal.screen.text,
+                      "ghost warning after filename check")
+        check(not export_path.exists(), "ghost export wrote before confirmation")
+        check({p.relative_to(home.path) for p in home.path.rglob("*") if p.is_file()} == files_before_export,
+              "ghost export created a file before confirmation")
         terminal.cancel_default()
+        terminal.pump(0.3)
+        check(not export_path.exists(), "ghost export cancellation created its target")
+        check({p.relative_to(home.path) for p in home.path.rglob("*") if p.is_file()} == files_before_export,
+              "canceled ghost export created a file")
+        assert_no_sentinel(home, sentinel)
+        # Confirmation Cancel restores the filename prompt; cancel that layer.
+        terminal.key(ESC)
+        terminal.wait(lambda: sentinel in terminal.screen.text, "ghost restored after canceled export prompt")
         terminal.action(r"^(Toggle ghost mode|Convert.*ghost|Ghost mode)", "ghost persistence warning")
         terminal.cancel_default()
         check(home.snapshot() == before, "canceled ghost output/persistence changed database state")
@@ -574,6 +611,8 @@ def new_ghost(home):
         terminal.paste(sentinel)
         terminal.wait(lambda: "No matches" in terminal.screen.text, "ghost absent from search")
         terminal.key(ESC)
+        terminal.action(r"^Discard ghost", "Discard ghost")
+        terminal.wait(lambda: sentinel not in terminal.screen.text, "discarded ghost removed from editor")
         terminal.finish()
     home.run("-q")
     check(home.snapshot() == before, "ghost typing/search/exit changed persisted notes/tags/index")
@@ -582,23 +621,25 @@ def new_ghost(home):
 
 
 def safe_conversion(home):
-    note_id = home.seed("synthetic safe conversion source")
+    note_id = home.seed("synthetic safe conversion source #keeporiginal\n#kill 1 hour")
     home.schema3()
     before = home.snapshot()
     with Terminal(home) as terminal:
         terminal.action(r"^(Toggle ghost mode|Convert.*ghost|Ghost mode)", "ghost conversion")
         terminal.four_sizes()
-        terminal.select(r"(Duplicate.*ghost|Keep original|Copy.*ghost)", "keep-original ghost choice")
-        terminal.key(ENTER)
+        terminal.confirm_choice(r"^Duplicate: keep original(?:\s|$)", "keep-original ghost choice")
         terminal.wait(lambda: "Ghost" in terminal.screen.text, "converted ghost status")
         terminal.key(b"\x05")
-        terminal.paste(" memory-only addition")
-        terminal.wait(lambda: "memory-only addition" in terminal.screen.text,
+        sentinel = "M2_CONVERTED_GHOST_ONLY_667fbcda"
+        terminal.paste(" " + sentinel)
+        terminal.wait(lambda: sentinel in terminal.screen.text,
                       "converted ghost edit accepted into editor")
         terminal.pump(3.2)
-        check("memory-only addition" in terminal.screen.text, "converted ghost edit disappeared while idle")
+        check(sentinel in terminal.screen.text, "converted ghost edit disappeared while idle")
+        assert_no_sentinel(home, sentinel)
         terminal.finish()
     check(home.snapshot() == before and home.note(note_id) is not None, "safe ghost conversion changed/deleted original")
+    assert_no_sentinel(home, sentinel)
 
 
 def inactive_expiry(home):
@@ -677,6 +718,53 @@ def controlled_external_delete(home):
     external_expiry(home, lifecycle=False)
 
 
+def note_graph(home, note_id):
+    # Capture one SQLite read snapshot so tags/FTS and note metadata cannot come
+    # from different stages of a concurrently completing lifecycle transaction.
+    with home.db() as db:
+        db.execute("BEGIN")
+        row = db.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+        return {"note": dict(row) if row else None,
+                "tags": tuple(tuple(r) for r in db.execute("SELECT note_id,tag FROM tags WHERE note_id=? ORDER BY tag", (note_id,))),
+                "fts": tuple(tuple(r) for r in db.execute("SELECT rowid,content FROM notes_fts WHERE rowid=?", (note_id,)))}
+
+
+def assert_note_assets(before, after, label):
+    check(before["note"] is not None and after["note"] is not None, label + " lost the persisted note")
+    for field in ("id", "content", "created_at", "is_pinned"):
+        check(after["note"][field] == before["note"][field], label + " changed preserved " + field)
+    check(after["tags"] == before["tags"] and after["fts"] == before["fts"], label + " changed note tags/FTS")
+    check(after["note"]["revision"] == before["note"]["revision"] + 1, label + " did not advance exactly one CAS revision")
+
+
+def assert_trashed(before, after, label):
+    assert_note_assets(before, after, label)
+    check(after["note"]["deleted_at"] is not None and after["note"]["delete_reason"] == "manual",
+          label + " did not preserve manual recoverable Trash state")
+    parse_instant(after["note"]["deleted_at"])
+
+
+def assert_restored(before, after, label):
+    assert_note_assets(before, after, label)
+    check(after["note"]["deleted_at"] is None and after["note"]["delete_reason"] == "",
+          label + " did not clear deletion state/reason")
+
+
+def assert_without_timer(before, after, label):
+    assert_restored(before, after, label)
+    check(after["note"]["expires_at"] is None and after["note"]["expiration_source"] == "none",
+          label + " rearmed a deadline/ownership")
+
+
+def assert_reset_timer(before, after, start, end, duration, label):
+    assert_restored(before, after, label)
+    check(after["note"]["expiration_source"] == "directive" and after["note"]["expires_at"] is not None,
+          label + " did not restore validated directive ownership/deadline")
+    deadline = parse_instant(after["note"]["expires_at"])
+    check(start + dt.timedelta(seconds=duration) <= deadline <= end + dt.timedelta(seconds=duration, milliseconds=1),
+          label + " reset deadline differs from the remembered elapsed duration")
+
+
 def assert_trash_readonly(home, terminal, note_id):
     terminal.wait(lambda: "synthetic Trash source" in terminal.screen.text, "original read-only Trash preview")
     snapshot = home.snapshot()
@@ -704,12 +792,19 @@ def trash_readonly(home):
     check(home.note(note_id)["content"] == "synthetic Trash source", "read-only Trash lost original content")
 
 
-def trash_roundtrip(home):
-    note_id = home.seed("synthetic Trash source\n#kill 1 hour")
+def trash_roundtrip(home, check_reset=True):
+    content = "synthetic Trash source #trashfixture\n#kill 1 hour"
+    duplicate_id = home.seed(content)
+    note_id = home.seed(content)
     home.schema3()
+    duplicate = note_graph(home, duplicate_id)
+    active = note_graph(home, note_id)
     with Terminal(home) as terminal:
         terminal.action(r"^Move to Trash", "Move to Trash")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "soft delete")
+        deleted = note_graph(home, note_id)
+        assert_trashed(active, deleted, "first soft delete")
+        check(note_graph(home, duplicate_id) == duplicate, "soft delete changed the duplicate survivor graph")
         terminal.action(r"^Open Trash", "Open Trash")
         trashed, original, forbidden = assert_trash_readonly(home, terminal, note_id)
         terminal.action(r"^Delete forever", "Delete forever")
@@ -720,27 +815,84 @@ def trash_roundtrip(home):
         terminal.four_sizes()
         terminal.cancel_default()
         check(home.snapshot() == trashed, "default-Cancel restore changed Trash")
-        terminal.action(r"^Restore note", "Restore choices")
-        terminal.select(r"Restore without timer", "restore without timer")
-        terminal.key(ENTER)
+        # Full-suite callers always exercise reset. The explicit false argument
+        # exists only for separately labeled diagnostic phases while a reset
+        # failure is being investigated; it cannot produce full acceptance.
+        deleted_for_safe_restore = deleted
+        if check_reset:
+            terminal.action(r"^Restore note", "Restore choices")
+            reset_start = dt.datetime.now(dt.timezone.utc)
+            terminal.confirm_choice(r"^Restore and reset timer(?:\s|$)", "restore and reset timer")
+            terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID reset restore")
+            reset_end = dt.datetime.now(dt.timezone.utc)
+            reset = note_graph(home, note_id)
+            assert_reset_timer(deleted, reset, reset_start, reset_end, 3600, "remembered one-hour reset")
+            check(note_graph(home, duplicate_id) == duplicate, "reset restore changed the duplicate survivor graph")
+            terminal.ensure_editor()
+            terminal.wait(lambda: "[Saved]" in terminal.screen.text, "saved editor after reset restore")
+            terminal.action(r"^Move to Trash", "second soft delete")
+            terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "second soft delete")
+            deleted_for_safe_restore = note_graph(home, note_id)
+            assert_trashed(reset, deleted_for_safe_restore, "second soft delete")
+            terminal.action(r"^Open Trash", "Open Trash for safe restore")
+            terminal.wait(lambda: "Trash · read-only" in terminal.screen.text, "loaded Trash after reset")
+        terminal.action(r"^Restore note", "safe Restore choices")
+        terminal.confirm_choice(r"^Restore without timer(?:\s|$)", "restore without timer")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID restore")
         restored = home.note(note_id)
         check(restored["expires_at"] is None, "safe restore rearmed directive")
+        restored_graph = note_graph(home, note_id)
+        assert_without_timer(deleted_for_safe_restore, restored_graph, "no-timer restore")
+        check(note_graph(home, duplicate_id) == duplicate, "restore changed the duplicate survivor graph")
         check(restored["content"] == original and forbidden not in terminal.screen.text,
               "read-only marker reached restored content/local buffer")
         terminal.ensure_editor()
-        terminal.action(r"^Move to Trash", "second soft delete")
-        terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "second soft delete")
-        terminal.action(r"Undo.*(Trash|trash)|Restore last", "Undo last move to Trash")
-        terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID Trash undo")
-        check(home.note(note_id)["content"] == original and forbidden not in terminal.screen.text,
-              "read-only marker reached same-ID undo content/local buffer")
+        terminal.wait(lambda: "[Saved]" in terminal.screen.text, "saved editor after no-timer restore")
+        terminal.finish()
+
+    # A fresh CLI save and process restart must observe the canceled directive;
+    # unchanged #kill text cannot resurrect a timer after the safe restore.
+    home.run("-q", "-l", "-n", "normal save after restore")
+    saved = note_graph(home, note_id)
+    check(saved["note"]["id"] == note_id and saved["note"]["content"] == original + "\nnormal save after restore" and
+          saved["note"]["revision"] == restored["revision"] + 1 and
+          saved["note"]["expires_at"] is None and saved["note"]["expiration_source"] == "none" and
+          saved["tags"] == restored_graph["tags"] and saved["fts"] == ((note_id, saved["note"]["content"]),),
+          "normal save after restore rearmed timer or changed identity/revision/tags/FTS")
+    check(note_graph(home, duplicate_id) == duplicate, "post-restore save changed the duplicate survivor")
+    after_save = home.snapshot()
+    home.run("-q")
+    check(home.snapshot() == after_save, "no-timer restore changed state/rearmed on restart")
+
+    with Terminal(home) as terminal:
+        terminal.wait(lambda: "normal save after restore" in terminal.screen.text and "[Saved]" in terminal.screen.text,
+                      "same-ID saved editor loaded after restart")
         terminal.action(r"^Move to Trash", "third soft delete")
         terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "third soft delete")
+        deleted_again = note_graph(home, note_id)
+        assert_trashed(saved, deleted_again, "third soft delete")
+        terminal.wait(lambda: "[Saved]" in terminal.screen.text, "clean initiating editor after soft delete")
+        terminal.action(r"Undo.*(Trash|trash)|Restore last", "Undo last move to Trash")
+        terminal.wait(lambda: home.note(note_id)["deleted_at"] is None, "same-ID Trash undo")
+        undone = note_graph(home, note_id)
+        assert_without_timer(deleted_again, undone, "same-ID Trash undo")
+        check(note_graph(home, duplicate_id) == duplicate, "Undo changed the duplicate survivor graph")
+        check(home.note(note_id)["content"] == saved["note"]["content"] and forbidden not in terminal.screen.text,
+              "read-only marker reached same-ID undo content/local buffer")
+        terminal.wait(lambda: "normal save after restore" in terminal.screen.text and "[Saved]" in terminal.screen.text,
+                      "Undo navigated to same-ID saved note")
+        terminal.action(r"^Move to Trash", "fourth soft delete")
+        terminal.wait(lambda: home.note(note_id)["deleted_at"] is not None, "fourth soft delete")
+        assert_trashed(undone, note_graph(home, note_id), "fourth soft delete")
         terminal.action(r"^Open Trash", "Open Trash")
+        terminal.wait(lambda: "normal save after restore" in terminal.screen.text and "Trash · read-only" in terminal.screen.text,
+                      "same-ID Trash preview before permanent deletion")
         terminal.action(r"^Delete forever", "confirmed Delete forever")
         terminal.confirm()
         terminal.wait(lambda: home.note(note_id) is None, "confirmed permanent deletion")
+        check(note_graph(home, note_id) == {"note": None, "tags": (), "fts": ()},
+              "permanent deletion left target tags/FTS behind")
+        check(note_graph(home, duplicate_id) == duplicate, "permanent deletion changed the duplicate survivor graph")
         terminal.ensure_editor()
         terminal.finish()
     home.healthy()
