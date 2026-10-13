@@ -193,7 +193,7 @@ CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...
 CGO_ENABLED=1 go test -tags sqlite_fts5 -race -count=1 ./...
 CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...
 CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .
-git diff --check
+# Inspect only owned paths with but diff <path> --json; audit added whitespace/conflict markers.
 # Run gofmt on changed Go files; gofmt -l must produce no changed-file names.
 ```
 
@@ -216,7 +216,7 @@ CGO_ENABLED=1 go test -tags sqlite_fts5 -run '^$' \
   -fuzz '^FuzzQN028KillDirective$' -fuzztime=1s -parallel=2 .
 CGO_ENABLED=1 go test -tags sqlite_fts5 -run '^$' \
   -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s -parallel=2 .
-git diff --check
+# Inspect only owned paths with but diff <path> --json; audit added whitespace/conflict markers.
 ```
 
 Add reproducible scripts `tests/m2_pty.py` and `tests/m2_cli.py`, owned by the coordinator/test agent, with temporary synthetic HOMEs and bounded process timeouts. Support terminal capability responses; never dump source note contents in normal failure logs. Invoke with `python3 tests/m2_pty.py /tmp/quicknote-m2` and `python3 tests/m2_cli.py /tmp/quicknote-m2`.
@@ -227,14 +227,18 @@ CLI scenarios: quiet creation/append/startup with due notes, stdout/stderr/exit 
 
 Milestone completion checklist:
 
-- [ ] QN-028, 029, 030, 031, 032 each have accepted implementation commits plus ledger evidence and exact published SHAs.
-- [ ] T-07/20/21/22/23/31 pass, and required existing identity/Unicode/CAS/async/math/migration regressions stay green.
-- [ ] v2 synthetic data upgrades to v3 with a verified recoverable backup; failure preserves originals; legacy uncertain deadlines cannot delete notes.
-- [ ] Ghost sentinel absent from DB/index/logs/files unless the test deliberately confirms an explicit output; retained originals and 72-hour Trash proven.
-- [ ] Final independent milestone review has no unresolved critical/important findings.
-- [ ] Final local `dev/v2` matches published `origin/dev/v2`; `main` stays unchanged; pre-existing untracked files remain untouched.
-- [ ] Update SESSION_HANDOFF and LOCAL_TESTING for schema 3, M2 commands/tests, failures/NOT RUN checks and next ready task. Refresh stale AGENTS continuation wording without changing its safety rules. Recommend QN-018 for M3 (QN-009 satisfied), subject to actual ledger and newly discovered P0 issues.
+- [x] QN-028, 029, 030, 031, 032 each have accepted implementation commits plus ledger evidence and exact published SHAs.
+- [x] T-07/20/21/22/23/31 pass, and required existing identity/Unicode/CAS/async/math/migration regressions stay green.
+- [x] v2 synthetic data upgrades to v3 with a verified recoverable backup; failure preserves originals; legacy uncertain deadlines cannot delete notes.
+- [x] Ghost sentinel absent from DB/index/logs/files unless the test deliberately confirms an explicit output; retained originals and 72-hour Trash proven.
+- [x] Final independent milestone review has no unresolved critical/important findings.
+- [x] Accepted code/harness `dev/v2` matches published `origin/dev/v2` at f4b501a; `main` stays at d3e5a119; pre-existing untracked files stay uncommitted and unchanged by our actions. Final documentation commit publication is verified by coordinator output.
+- [x] Update SESSION_HANDOFF and LOCAL_TESTING for schema 3, M2 commands/tests, failures/NOT RUN checks and next ready task. Refresh stale AGENTS continuation wording without changing its safety rules. Recommend QN-018 for M3 (QN-009 satisfied), subject to actual ledger and newly discovered P0 issues.
 
 ## Plan self-review
 
-Coverage maps QN-028→T-07/T-20, QN-029/030→T-20, QN-031→T-22/T-23, QN-032→T-21/T-31. Five Review Focus cases have owning regressions above. Interfaces are defined before consumption; parser/time choices, migration version, pin/reset/ghost policies and worker boundaries are explicit. M3/M4/M5 overlap is limited to prerequisite hooks and lifecycle safety guards. The proposed amendment awaits maintainer review; no requirement or task has been silently marked complete.
+Coverage maps QN-028→T-07/T-20, QN-029/030→T-20, QN-031→T-22/T-23, QN-032→T-21/T-31. Five Review Focus cases have owning regressions above. Interfaces are defined before consumption; parser/time choices, migration version, pin/reset/ghost policies and worker boundaries are explicit. M3/M4/M5 overlap is limited to prerequisite hooks and lifecycle safety guards. The maintainer approved the v1.1.0 amendment and this execution. M2 is complete after task reviews, one broad milestone review/correction/re-review, final acceptance and exact source verification. The living ledger records all commits, failures/limits, rulings and the earlier extra remote ref; final documentation publication is coordinator-owned.
+
+## Final acceptance record
+
+Implementation published at f4b501a96183773540898672a1d28198b6f74a2d; schema 3/spec 1.1.0. Final full tests23.922s/race92.960s/vet/normal build; broad20×279.237s; directive/Unicode fuzz; corrected-dev CLI10/10/PTY15/15; independent final review APPROVED with all four integration findings closed. All 59 Go/module/harness sources matched before/after append-only integration. Human platform/real clipboard/remoteCI/benchmarks NOT RUN; no production migration/backup/destructive test. Main verified at d3e5a119. Next QN-018. See living ledger for exact commands/SHAs and complete rulings. Earlier unintended remote QN028 ref remains documented.

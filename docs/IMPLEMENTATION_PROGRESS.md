@@ -1,12 +1,14 @@
 # Quicknote v2 — implementation progress
 
-Branch: `qn-v2/m2-final-controller`
-Latest implementation SHA: 7f36a84c6bb7d47fefe95b5e996166c73f16e6ee
+Branch: `dev/v2`
+Latest implementation SHA: f4b501a96183773540898672a1d28198b6f74a2d
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: final M2 controller correction REVIEW; final M2 acceptance pending (approved execution)
+Current task: M2 DONE (QN-028–032); next READY QN-018
 Updated: 2026-10-13 UTC
 
-## Completed repository changes
+## Historical bootstrap notes (superseded by dated execution evidence)
+
+### Completed repository changes
 
 - Added isolated SQLite temporary HOME fixtures and FTS/save/trash smoke tests.
 - Added Unicode roundtrip smoke test.
@@ -14,14 +16,14 @@ Updated: 2026-10-13 UTC
 - Added Go CI workflow for test/vet/build/race.
 - Added baseline report and multi-session handoff guidance.
 
-## Verification status
+### Historical verification status
 
 - GitHub commits: yes, on `dev/v2`.
 - Local `go test ./...`: not run (unable to clone repository in execution container).
 - CI checks: not confirmed. Never interpret a skipped regression as resolved.
 - Production data accessed: no.
 
-## Next session
+### Historical next-session instructions
 
 1. Read `docs/QN-001-BASELINE.md` and inspect CI job output on `dev/v2`.
 2. Fix compilation or fixture issues if CI reports any; do not silently change assertions to make them pass.
@@ -784,3 +786,89 @@ Coordinator integrated-tree check PASSED: `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-c
 Pre-refinement gates also passed full23.960s/race93.188s/repetition15.527s/vet/normal build; these precede the last feedback correction and are not substituted for final results above. The coordinator supplied byte-identical baseline50ca full23.344s/vet/normal-build and CLI10/10/PTY15/15; this implementer reran the targeted failing baseline rather than duplicating that full baseline. Final aggregate CLI/PTY, bounded fuzz and milestone-wide repeats are coordinator-owned and **NOT RUN by this implementer**. Human Fedora/Zsh/Kitty/tmux/real clipboard, remote CI and release benchmarks are also **NOT RUN**.
 
 **Safety/rulings:** schema stays **3**, specification **1.1.0**, no migration/retention change or production notes/backup/deletion operation. No user config/log/database contents were read in this correction; the previously disclosed inspection deviation remains historical. Only the existing queue/ack/load ownership seams changed. GitButler inspection required automatically reviewed metadata escalation after a read-only SQLite error; no raw Git, remote action, branch switch, integration or reviewed-history rewrite. Source50ca and other agent work remain intact. Next: coordinator's scoped review of these four corrections and any new breakage, then final M2 acceptance; QN-018 follows only after that acceptance.
+
+## M2 complete — final acceptance, 2026-10-13 UTC
+
+**DONE: QN-028–032**, approved specification **1.1.0**, SQLite schema **3**. Final implementation/test head **`f4b501a96183773540898672a1d28198b6f74a2d`** was published by GitButler to **origin/dev/v2** (f7f783b→f4b501a); actual push output listed only dev/v2. Stable local main was independently read through `but show main --json` and remains **`d3e5a119cdf12ec99fcc14a62545f60729adea54`**. No main merge or mutation. Final documentation publication is reported by the coordinator's commit/push result; this file records the immutable tested implementation SHA rather than a self-referential documentation SHA.
+
+### Accepted implementation commits
+
+| Task | Accepted dev/v2 commits | Result |
+| --- | --- | --- |
+| QN-028 | `7c6d6c31093f3477e97a86b04a0e95ef627fca36`, `4f327207dbaa4dbc985b506e4eb35e00349c72c7`, `a9d4c0c79f3674c1abac5dc6a0386501c75c579b`; compatibility correction `869a7d0e17c50d94b60f72dcdcae57bc421189af` | Durable TTL, transactional verified-backup migration, safe maintenance and mixed-timestamp ordering |
+| QN-029 | reviewed sources `9dc41d3b54d5c22b87a5449b09597c8929f31faf`, `efc5171d0bb3a58b61cac4826a4716269409d07f`, `2cfe556cfb48f666722aa5eae3f03de98eb44bba`, `b1494c5419e46a4b20ba83fc22e35b7a876adcc6`; integrated merge `f48a32cbd88cc9c105bf90d60bc4cf3acc6124a6` | Presets/custom TTL, absolute confirmation, Never, keyboard/status routes |
+| QN-030 | `808b6a8793b41a2dbba5f8b31e9a3e94339c62d2`, `b4d606febd2217c5eaf00d0fbeab8acb03715e98` | Atomic pin/unpin suppression, clear consequences, stale-search metadata reconciliation |
+| QN-031 | `9bd2630add832202743a0a835a29a685c66b0647`, `76379fe9eed555c6d1a72930fc8ee3625f23f994`, `f2bbf919e3beb672f2169567712705b0643b9119` | Ghost from creation, safe original disposition, output/privacy guards, navigation ownership |
+| QN-032 | `4736b6ee8326f4dfd0081a17c6bb9ab0b79f3f11`, `7f36a84c6bb7d47fefe95b5e996166c73f16e6ee` | Read-only Trash, restore/reset, same-ID metadata Undo, confirmed permanent delete, correct scrolling/cleanup |
+| Final M2 integration correction | reviewed source `bbb4f6a3ec1ad5d62004caff8fb12b6285de0ef6`; dev copy `f4b501a96183773540898672a1d28198b6f74a2d` | Explicit user intent outranks owned expiry; superseded ACK settles queue visibly; revision-zero purge ownership; cancellation feedback |
+
+Reproducible tests are committed as `9b25a9d2f057977ff38ad9b0b51fa9622dac13ad`, `56fe9fc3be857e5eb864d57e30c033444420cb12`, `4dce421eb9994b7765911a6b7a6c61eb1f3e40a1`, `d3049f33fc2f0e958c5ea2dbcc0006ee3e6d72ab`, `8f565636d4352c37bf02d9a84744a87159160f4c`. Files: **tests/m2_cli.py**, **tests/m2_pty.py**. Original agent commits/refs remain intact; append-only GitButler picks did not rewrite prior dev/shared history.
+
+### Final verified evidence
+
+Go environment: **go1.26.8-X:nodwarf5 linux/amd64**, GCC/CGO enabled, mandatory **sqlite_fts5**. All Go commands used `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`.
+
+| Verification | Exact command/result | Attribution |
+| --- | --- | --- |
+| Full Go suite | `go test -tags sqlite_fts5 -count=1 ./...` —PASSED **23.922s** | Final correction source, after last feedback refinement |
+| Race detector | `go test -tags sqlite_fts5 -race -count=1 ./...` —PASSED **92.960s** | Same final code, final implementer |
+| Vet | `go vet -tags sqlite_fts5 ./...` —PASSED, exit0 | Final code |
+| Normal build | `go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .` —PASSED, exit0 | Coordinator primary dev/v2 after integration; no buildvcs fallback |
+| Broad repeated selection | Exact 20-run command below —PASSED **279.237s** | Coordinator, final code |
+| Kill directive fuzz | `go test -tags sqlite_fts5 -run '^$' -fuzz '^FuzzQN028KillDirective$' -fuzztime=1s -parallel=2 . -args -test.fuzzcachedir=/tmp/m2-final-fuzz-kill` —PASSED **2.025s**, 27,280 executions | Coordinator |
+| Unicode source-row fuzz | `go test -tags sqlite_fts5 -run '^$' -fuzz '^FuzzQN016SourceRows$' -fuzztime=1s -parallel=2 . -args -test.fuzzcachedir=/tmp/m2-final-fuzz-unicode` —PASSED **1.647s**, 16,776 executions | Coordinator |
+| CLI full acceptance | `PYTHONDONTWRITEBYTECODE=1 python3 tests/m2_cli.py /tmp/quicknote-m2` —PASSED **10/10**, exit0 | Independent runner on corrected dev/f4b501a |
+| PTY full acceptance | `PYTHONDONTWRITEBYTECODE=1 python3 tests/m2_pty.py /tmp/quicknote-m2` —PASSED **15/15**, exit0; zero FAIL/MISSING | Independent runner on same corrected dev/f4b501a |
+| Formatting/audit | gofmt changed Go files; individual owned-path `but diff <path> --json` added-line audits; both Python AST/whitespace checks —PASSED | No raw Git whitespace command after policy change |
+
+Exact broad repetition command:
+
+```zsh
+CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache go test -tags sqlite_fts5 -count=20 \
+  -run 'TestQN02[89]|TestQN03[012]|TestQN011T17|TestQN012(T02|T24)|TestQN048|TestM2Review' .
+```
+
+All **59 Go/module/harness source files** were hashed before and after dev integration and matched exactly, including file set. Thus final full/race/vet evidence applies to byte-identical integrated code; the coordinator did not redundantly rerun heavy full/race checks solely because copied commits received new SHAs. The final dev binary was rebuilt normally and the complete CLI/PTY suites reran after the controller corrections. No source changes followed these checks.
+
+Final binary SHA256 **c9b4454d1e3f7af64b2c8794c172443bc47b274c1ace6774c8221711754d3d7c**, stamped implementation **f4b501a96183773540898672a1d28198b6f74a2d**, CGO1/FTS5. Modified VCS flag is true with the pre-existing untracked workspace files; this does not assert a clean workspace. CLI script SHA256 **33788f759d62b33a47e4fc439ed79f4247b4e10760bcd75b1fc76d5241c4e5fd**; PTY script SHA256 **abfe21ba5238ec05221181f5fee73af434786a8ad70514005ddc463b53e3dfd5**. Runner verified stable head/binary/script hashes before/after and absent Python cache artifacts.
+
+Full/model/store suites verify T-07/20/21/22/23/31 and existing identity/Unicode/CAS/async/math/migration regressions: synthetic schema upgrades and recoverable backups, rollback/FK/integrity/tag/FTS counts, exact72h/>72h/DST, clock jumps, repeated/independent-process CAS, dirty/failed owned expiry, stale full-load refetch, pin/no-timer precedence and readonly/duplicate/ghost privacy. Default/legacy/custom and120×40/80×24/50×12/25×5/1×1/2×2 layouts, nested Escape, visible selections, public save/navigation ownership and actual PTY scrolling are verified. Fuzz execution counts and correctness tests are not latency/performance benchmarks.
+
+### Independent milestone review and closed findings
+
+Each task received independent spec/code reviews. One broad final review found **two Important and two Minor** controller integration defects: maintenance replaced queued Never/pin/ghost; a newer search observation stranded queued Never; zero revision collided with absence; cancellation feedback was overwritten. One fresh implementer fixed all four in one scoped wave, with **21 faithful regression cases**, original overlays unchanged and full final gates after the last feedback refinement.
+
+The final independent scoped reviewer **APPROVED all four ADDRESSED**, no new actionable/blocking finding. Original Important overlay PASSED **0.124s**, zero-revision overlay PASSED **0.015s** independently. Queued user actions now survive due maintenance; superseded dependent requests cancel visibly with reopen/retry and matching dirty-CAS navigation/exit recovery. No summary revision is applied to older full content. Explicit SourcePurged presence supports revision0 without dropping newer dirty/version/revision recovery. Normal Saved and successful TTL progress remain correct. **No unresolved Critical/Important or carried Minor finding.**
+
+**FAILED during development:** the genuine red cases and review reproductions recorded above and in dated entries, including clock reset223.126ms early, scrolling and queue-ordering failures. All final acceptance/review reproductions reran green. Early sandbox GitButler metadata/cache errors were recovered by automatically reviewed scoped escalation or temporary writable caches; not represented as passing test evidence. The broad final review had CLI10/PTY15 green before its deeper queue fixtures exposed gaps; those gaps were fixed and the final corrected-dev full harness reran green.
+
+### Limits, workspace and publication deviation
+
+**NOT RUN:** human Fedora/Zsh/Kitty/tmux/real clipboard matrix, remote CI, release benchmarks. No production note database was migrated/backed up or used for destructive tests; all data fixtures and clipboard writers were synthetic/disposable. Existing config/log files were accidentally included by one read-only workspace diff; they were not modified/committed, no production SQLite queries/tests occurred, and all subsequent diffs targeted only owned paths. Pre-existing theme/notes.sqlite/vim_profile.log remain uncommitted and unchanged by our actions. No secure-erasure promise: existing copies/backups, terminal/OS memory and already-confirmed external output can remain.
+
+The earlier unintended **origin/qn-v2/QN-028-durable-ttl** at **869a7d0e17c50d94b60f72dcdcae57bc421189af** remains. It contains existing dev commits; installed GitButler offers no documented safe remote-delete/ancestor-exclusion command. The dry run omitted it, actual push created it, and this was disclosed. No unsupported raw Git/API/main-target landing workaround was used. Later actual pushes listed only dev/v2. This is the remaining publication deviation, not an unresolved product acceptance defect.
+
+GitButler target metadata is still origin/main; never blindly pull/land against it. Primary one-writer dedicated branches and setup/explicit teardown/selected picks are the verified workflow; preserve all worker branches/worktrees. Session scratch is removable only after these exact findings/rulings/evidence are durable; other agents' work and user files stay intact.
+
+### Next task
+
+**QN-018 READY: Filter/query grammar** (QN-009 dependency satisfied). Start from actual current dev/v2, read full governing docs, run baseline and meaningful T-09 parser regressions, implement only that task. M3 UI/sidebar/palette work, trailing-newline/general CLI/export changes, measured performance tuning and human-platform/release checks remain their roadmap tasks.
+
+### Rulings made during approved execution
+
+The following is the complete session ruling list, in execution order, including the reason and cost/risk recorded before acting.
+1. generate numbered briefs from QN headings because skill extractor expects numeric headings — exact requirements retained — no product cost.
+2. native worktree listing stalled and was canceled; use /tmp isolated Git worktrees — avoids blocking approved work — only temporary workspace placement differs.
+3. QN029 may extend tui_async.go for typed TTL routing; plan omitted actual central dispatcher file — necessary callsite integration, no new subsystem — if wrong, small routing diff is reversible.
+4. extend QN028 correction to chronological legacy/new timestamp ordering in CLI and list queries — required by timestamp compatibility and prevents wrong-note append — expression-sort may cost indexed-order performance, measured optimization remainsQN044.
+5. QN030 may extend overlays.go confirmationKey for pin confirmation routing — existing shared confirmation dispatcher omitted from brief — reversible narrowcase, no newcontroller or productscope.
+6. QN030 may extend tui_async.go actual action dispatcher and keymap.go commandActions contextual title callsite — plan named behavior but omitted real owning seams — narrow routing/titlecall only, no registryrewrite.
+7. QN030 may extend receiveSearch in tui_async.go for staleincomingpin/unpin summarymetadata — concrete new pin-display race proven independently — narrow reconciliation only; no backend grammar/ranking rewrite.
+8. QN030 may adjust currentCommands window for selected pinrow at25x5 — renderedregression proves wrappedprecedingprofilehidespinconsequence — narrowtask-only scrolling, no Viewmutation/generalmenu rewrite; reversibletinyconditional pending scopedqualityreview.
+9. keep originalreviewed911/source andmeaningfulfollowupcorrection insteadamend — newuserforbidsrewritingreviewedhistorywithoutapproval — no historyrewrite; extra taskcorrectioncommit retained forreviewtraceability.
+10. use dedicatedGitButlerbranches inprimaryworkspace withoneproductimplementer — installedCLIcannotuse/tmp linkedworktrees andnewuserVCrequirementoverridesworktreefallback — testedsetup/explicitteardown/pickintegration, reversiblebutmetadatachanges, preserveexistingworkers.
+11. conversionpicker initialCancel with primaryDuplicatekeeporiginal — preservesexistingdefaultCancelconfirmation andapprovedsafeconversiondisposition — no newunsafeEnterbehavior, smallUIchoicewording ifwrong.
+12. QN032 may extend store_lifecycle.go RestoreSnapshotCAS with exact recovery-bound check — task acceptance requires >72h unavailable even before maintenance, owning file omitted from planned UI file list — narrow store behavior change with boundary/corrupt-date tests; if wrong, could reject late recovery, so preserve uncertain legacy-date safety.
+13. QN032 may extract shared discardMemoryDraft cleanup in ghost.go — faithful ordinaryIDzero discard regression retained obsolete content/session references and this owns existing correct memory cleanup — preserve ghost wrapper/privacy/lateexport guards and assigned-ID save serialization; narrow reversible helper, regression risk if cleanup diverges is covered by both modes.
+14. Trash maxoffset is max(0,wrappedRows-visibleBodyRows) in Update and pureView — normal lastviewport geometry makes shortnotesunscrollable and prevents blankspaceoverscroll; existinglen(rows)-1 isnotbindingacceptance — small intentionalnavigationcorrection, longUnicode/reverse/resize/tiny/short0 tests required if geometrywrong.
+15. QN032 correction may extract shared panel body geometry in layout.go — exact viewport clamp needs same border/header/footer/body bounds as renderer and planned file list omitted owning layout seam — keep renderer equivalent/pure and add normal/tiny/Unicode layout regressions; if geometry differs, clipping/navigation regressions are reversible and tested.
