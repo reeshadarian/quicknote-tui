@@ -314,7 +314,16 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		return m.saveSnapshot(d.Note, d.localVersion)
 	}
 	if intent, queued := m.lifecycleQueued[r.Key]; queued {
-		return m.startLifecycle(r.Key, d, intent)
+		if cmd := m.startLifecycle(r.Key, d, intent); cmd != nil {
+			return cmd
+		}
+	}
+	// A declined queued mutation has no worker left to resume a continuation.
+	// Resume only the action that still belongs to this acknowledged source.
+	if m.pendingAction != nil && m.pendingActionID == r.Key && m.activeKey() == r.Key && !m.exitPending() {
+		key := *m.pendingAction
+		m.pendingAction = nil
+		return m.runAction(key)
 	}
 	return m.finishExit()
 }

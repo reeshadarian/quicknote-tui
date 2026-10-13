@@ -193,7 +193,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 			return m.requestSave()
 		}
 		if intent, ok := m.lifecycleQueued[r.Key]; ok {
-			return m.startLifecycle(msg.Note.ID, d, intent)
+			if cmd := m.startLifecycle(msg.Note.ID, d, intent); cmd != nil {
+				return cmd
+			}
 		}
 		m.flashMsg = "Saved"
 		if m.pendingAction != nil && m.pendingActionID == r.Key {
@@ -210,7 +212,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		return m.saveSnapshot(n, d.localVersion)
 	}
 	if intent, ok := m.lifecycleQueued[r.Key]; ok {
-		return m.startLifecycle(msg.Note.ID, d, intent)
+		if cmd := m.startLifecycle(msg.Note.ID, d, intent); cmd != nil {
+			return cmd
+		}
 	}
 	return m.finishExit()
 }

@@ -569,3 +569,139 @@ func TestQN029ReviewQueuedTTLSourceGuardsAndConflict(t *testing.T) {
 		})
 	}
 }
+
+func TestQN029CanceledQueueCompletesActualExit(t *testing.T) {
+	for _, change := range []string{"edit", "switch"} {
+		t.Run(change, func(t *testing.T) {
+			m, a, _, n, other := ttlModel(t)
+			m = ttlReview(t, m, 0)
+			m = updateTest(t, m, keyMessage("tab"))
+			m, first := rawUpdate(m, keyMessage("enter"))
+			result := first()
+			m = ttlReview(t, m, 5)
+			m = updateTest(t, m, keyMessage("tab"))
+			m = updateTest(t, m, keyMessage("enter"))
+			if change == "edit" {
+				m = typeTest(m, " newest")
+			} else {
+				m = updateTest(t, m, keyMessage("alt+right"))
+				if m.activeID() != other.ID {
+					t.Fatal("keyboard switch failed")
+				}
+			}
+			text := m.buffer.Text()
+			m, early := rawUpdate(m, keyMessage("esc"))
+			if early != nil {
+				t.Fatal("exit before outstanding write")
+			}
+			m, cmd := rawUpdate(m, result)
+			if change == "edit" {
+				if cmd == nil {
+					t.Fatal("missing content save")
+				}
+				m, cmd = rawUpdate(m, cmd())
+			}
+			stored, e := a.GetNote(n.ID)
+			if e != nil || !stored.ExpiresAt.Valid || (change == "edit" && stored.Content != text) || m.buffer.Text() != text {
+				t.Fatal("cancellation/content changed", stored, e)
+			}
+			if cmd == nil || m.exitPending() || len(m.saves) != 0 || len(m.lifecycleRequests) != 0 || len(m.lifecycleQueued) != 0 {
+				t.Fatal("canceled TTL stalled exit", m.exitPending())
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Fatal("not Quit after final acknowledgment")
+			}
+		})
+	}
+}
+func TestQN029QueueCompletesActualNavigationAfterSave(t *testing.T) {
+	for _, editAfterConfirm := range []bool{false, true} {
+		t.Run(fmt.Sprint(editAfterConfirm), func(t *testing.T) {
+			m, a, _, n, _ := ttlModel(t)
+			m = typeTest(m, " initial dirty")
+			m = ttlReview(t, m, 0)
+			m = updateTest(t, m, keyMessage("tab"))
+			m, save := rawUpdate(m, keyMessage("enter"))
+			if editAfterConfirm {
+				m = typeTest(m, " newer")
+			}
+			text := m.buffer.Text()
+			m, early := rawUpdate(m, keyMessage("ctrl+n"))
+			if early != nil {
+				t.Fatal("navigation skipped outstanding save")
+			}
+			m = drainTestCmd(t, m, save)
+			stored, e := a.GetNote(n.ID)
+			if e != nil || stored.Content != text || stored.ExpiresAt.Valid == editAfterConfirm {
+				t.Fatal("wrong saved text/timer", stored, e)
+			}
+			if m.activeID() != 0 || m.buffer.Text() != "" || m.pendingAction != nil || len(m.saves) != 0 || len(m.lifecycleRequests) != 0 || len(m.lifecycleQueued) != 0 {
+				t.Fatal("navigation stalled after queued TTL", m.activeID(), m.pendingAction)
+			}
+		})
+	}
+}
+
+func TestQN029ContinuationDoesNotCrossDraftOrFailure(t *testing.T) {
+	t.Run("other owner", func(t *testing.T) {
+		m, a, _, n, other := ttlModel(t)
+		m = ttlReview(t, m, 0)
+		m = updateTest(t, m, keyMessage("tab"))
+		m, first := rawUpdate(m, keyMessage("enter"))
+		result := first()
+		m = updateTest(t, m, keyMessage("alt+right"))
+		m = typeTest(m, " other dirty")
+		text := m.buffer.Text()
+		m, save := rawUpdate(m, keyMessage("ctrl+n"))
+		if save == nil || m.pendingActionID != other.ID {
+			t.Fatal("missing other-owner save/navigation")
+		}
+		m, cmd := rawUpdate(m, result)
+		if cmd != nil || m.activeID() != other.ID || m.buffer.Text() != text || m.pendingAction == nil || m.pendingActionID != other.ID {
+			t.Fatal("old lifecycle ack ran another draft's navigation")
+		}
+		m = drainTestCmd(t, m, save)
+		stored, e := a.GetNote(other.ID)
+		if e != nil || stored.Content != text || m.activeID() != 0 {
+			t.Fatal("other owner continuation lost", stored, e)
+		}
+		original, e := a.GetNote(n.ID)
+		if e != nil || original.Content != n.Content {
+			t.Fatal("original changed", original, e)
+		}
+	})
+	for _, failure := range []string{"save failure", "conflict"} {
+		t.Run(failure, func(t *testing.T) {
+			m, a, b, n, _ := ttlModel(t)
+			m = ttlReview(t, m, 0)
+			m = updateTest(t, m, keyMessage("tab"))
+			m, first := rawUpdate(m, keyMessage("enter"))
+			result := first().(lifecycleResult)
+			m = ttlReview(t, m, 5)
+			m = updateTest(t, m, keyMessage("tab"))
+			m = updateTest(t, m, keyMessage("enter"))
+			m = typeTest(m, " local newest")
+			text := m.buffer.Text()
+			m = updateTest(t, m, keyMessage("ctrl+n"))
+			if failure == "conflict" {
+				remote := result.Note
+				remote.Content = "external newest"
+				if _, e := b.Save(remote); e != nil {
+					t.Fatal(e)
+				}
+			} else {
+				if _, e := a.db.Exec("CREATE TRIGGER synthetic_content_failure BEFORE UPDATE ON notes WHEN NEW.content != OLD.content BEGIN SELECT RAISE(ABORT,'synthetic failure'); END"); e != nil {
+					t.Fatal(e)
+				}
+			}
+			m = updateTest(t, m, result)
+			stored, e := a.GetNote(n.ID)
+			if e != nil || m.activeID() != n.ID || m.buffer.Text() != text || !m.needsSave || m.saveErr == nil || m.pendingAction != nil || !stored.ExpiresAt.Valid {
+				t.Fatal("failed save resumed navigation or lost draft", stored, e, m.saveErr)
+			}
+			if failure == "conflict" && !errors.Is(m.saveErr, ErrConflict) {
+				t.Fatal("conflict classification lost")
+			}
+		})
+	}
+}
