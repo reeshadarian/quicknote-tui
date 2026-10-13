@@ -403,3 +403,24 @@ func (m *model) confirmPin(c Confirmation) tea.Cmd {
 	m.flashMsg = "Updating pin…"
 	return m.requestLifecycle(lifecycleIntent{Kind: "pin", Pinned: false, GuardPin: true, SourceKey: c.Key, SourceVersion: c.Version})
 }
+
+// A search row is a summary, never an editor/save snapshot. Refresh metadata
+// from a newer observed revision without changing this result's content,
+// preview or match coordinates. Opening still reads a full content/revision
+// pair, and receiveLoad refetches when a summary proves that read was stale.
+func (m model) reconcileSearchLifecycle(n Note) Note {
+	n = cloneNote(n)
+	known := m.latestLifecycleSnapshot(n)
+	if known.Revision <= n.Revision {
+		return n
+	}
+	n.Revision = known.Revision
+	n.IsPinned = known.IsPinned
+	n.ExpiresAt = known.ExpiresAt
+	n.ExpirationSource = known.ExpirationSource
+	n.ExpirationNeedsReview = known.ExpirationNeedsReview
+	n.KillHash, n.KillStart = known.KillHash, known.KillStart
+	n.DeletedAt, n.DeletedTime, n.DeleteReason = known.DeletedAt, known.DeletedTime, known.DeleteReason
+	n.UpdatedAt, n.UpdatedTime = known.UpdatedAt, known.UpdatedTime
+	return n
+}

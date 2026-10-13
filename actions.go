@@ -141,7 +141,7 @@ func actionRegistry() []Action {
 		makeAction("confirmation.accept", "Accept selected choice", "Run only the explicitly selected confirmation", "Confirmation", []appState{stateConfirm}, "enter"),
 		makeAction("commands.open", "Commands", "Open the basic command menu (fuzzy palette is QN-023)", "Application", []appState{stateTyping, stateTrash, stateHelp}),
 		makeAction("keyboard.profile", "Switch keyboard profile", "Switch default/legacy profile and save keyboard.json", "Settings", nav),
-		makeAction("note.pin", "Pin note", "Clear expiration and keep this note from expiring", "Lifecycle", nav),
+		makeAction("note.pin", "Pin note: clear TTL", "Clear expiration and keep this note from expiring", "Lifecycle", nav),
 		makeAction("ttl.set", "Set expiration", "Choose a durable expiration preset", "Lifecycle", nav, "alt+t"),
 		makeAction("ttl.cancel", "Cancel expiration picker", "Keep the draft unchanged", "Lifecycle", []appState{stateTTLPicker, stateTTLCustom}, "esc", "ctrl+c"),
 		makeAction("ttl.up", "Previous expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "up"),
@@ -293,7 +293,7 @@ func pinEnabled(c ActionContext) (bool, string) {
 
 func contextualAction(a Action, c ActionContext) Action {
 	if a.ID == "note.pin" && c.Note.IsPinned {
-		a.Title = "Unpin note"
+		a.Title = "Unpin note: no timer"
 		a.Description = "Continue with no timer; the cleared expiration stays canceled"
 	}
 	return a

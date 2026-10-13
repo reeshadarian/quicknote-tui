@@ -750,7 +750,11 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		if m.state == stateSearch && r.Generation == m.searchGeneration && r.Query == m.searchInput.Value() && r.Trash == (m.prevState == stateTrash) {
 			m.searchPending = false
 			m.searchErr = msg.Err
-			m.searchResults = msg.Notes
+			results := make([]Note, len(msg.Notes))
+			for i, n := range msg.Notes {
+				results[i] = m.reconcileSearchLifecycle(n)
+			}
+			m.searchResults = results
 			m.searchIndex = 0
 		}
 		return m, nil

@@ -217,6 +217,11 @@ func (m model) commandView() string {
 	height := max(1, m.viewport.Height)
 	visible := max(1, height-2)
 	start := max(0, m.commandIndex-visible+1)
+	// In a short panel, preceding wrapped rows must not hide the pin action's
+	// immediate expiration consequence before the user dispatches it.
+	if height <= 5 && m.commandIndex >= 0 && m.commandIndex < len(actions) && actions[m.commandIndex].ID == "note.pin" {
+		start = m.commandIndex
+	}
 	for i := start; i < min(len(actions), start+visible); i++ {
 		a := actions[i]
 		prefix := "  "

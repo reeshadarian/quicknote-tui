@@ -187,7 +187,7 @@ func TestQN030KeyboardAndLayout(t *testing.T) {
 			if a.ID == "note.pin" {
 				found = true
 				m.commandIndex = i
-				if a.Title != "Pin note" {
+				if !strings.HasPrefix(a.Title, "Pin note") {
 					t.Fatal(a.Title)
 				}
 			}
@@ -203,7 +203,7 @@ func TestQN030KeyboardAndLayout(t *testing.T) {
 		for i, a := range m.commandActions() {
 			if a.ID == "note.pin" {
 				m.commandIndex = i
-				if a.Title != "Unpin note" {
+				if !strings.HasPrefix(a.Title, "Unpin note") {
 					t.Fatal(a.Title)
 				}
 			}
@@ -321,5 +321,108 @@ func TestQN030StaleUnpinConfirmation(t *testing.T) {
 	stored, _ := a.GetNote(n.ID)
 	if !stored.IsPinned {
 		t.Fatal("unpin crossed notes")
+	}
+}
+
+// Selecting pin changes stored expiration immediately, so the consequence must
+// be visible before dispatch, including the smallest readable Commands panel.
+func TestQN030ReviewCommandsExplainPinConsequence(t *testing.T) {
+	for _, profile := range []string{"default", "legacy"} {
+		for _, pinned := range []bool{false, true} {
+			m, _, _, _, _ := pinModel(t)
+			m.keymap = defaultKeymap(profile)
+			m.Note.IsPinned = pinned
+			m.openCommands()
+			for i, a := range m.commandActions() {
+				if a.ID == "note.pin" {
+					m.commandIndex = i
+				}
+			}
+			for _, size := range [][2]int{{120, 40}, {80, 24}, {50, 12}, {25, 5}, {1, 1}, {2, 2}} {
+				m = updateTest(t, m, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+				view := m.View()
+				if size[0] >= 25 {
+					if pinned {
+						if !strings.Contains(view, "> Unpin note: no timer") {
+							t.Fatal("Commands hides selected unpin outcome", size, view)
+						}
+					} else if !strings.Contains(view, "> Pin note: clear TTL") {
+						t.Fatal("Commands hides selected pin expiry clearing", size, view)
+					}
+				}
+				if lipgloss.Width(view) > size[0] || lipgloss.Height(view) > size[1] {
+					t.Fatal("explanation exceeded frame", size, view)
+				}
+				t.Logf("%s pin=%v Commands %dx%d:\n%s", profile, pinned, size[0], size[1], view)
+			}
+			m = updateTest(t, m, keyMessage("esc"))
+			if m.state != stateTyping {
+				t.Fatal("tiny Commands cancel lost parent", m.state)
+			}
+		}
+	}
+}
+
+func TestQN030ReviewHeldSearchKeepsPinMetadata(t *testing.T) {
+	for _, pinned := range []bool{true, false} {
+		t.Run(map[bool]string{true: "pin", false: "unpin"}[pinned], func(t *testing.T) {
+			m, a, _, n, other := pinModel(t)
+			if !pinned {
+				var cmd tea.Cmd
+				m, cmd = pinAction(t, m)
+				m = drainTestCmd(t, m, cmd)
+				n = m.Note
+			}
+			var cmd tea.Cmd
+			if pinned {
+				m, cmd = pinAction(t, m)
+			} else {
+				m = updateTest(t, m, ActionMsg{"note.pin"})
+				m = updateTest(t, m, keyMessage("tab"))
+				m, cmd = rawUpdate(m, keyMessage("enter"))
+			}
+			if cmd == nil {
+				t.Fatal("missing metadata request")
+			}
+			m.pushOverlay(stateSearch)
+			m.prevState = stateTyping
+			m.searchInput.SetValue("important")
+			m.requestSearch()
+			rows, err := a.SearchChecked("important", false)
+			if err != nil || len(rows) != 1 {
+				t.Fatal("search snapshot", rows, err)
+			}
+			before := cloneNote(rows[0])
+			held := searchResult{Request: searchRequest{m.searchGeneration, "important", false}, Notes: rows}
+			m = updateTest(t, m, cmd())
+			current, err := a.GetNote(n.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m = updateTest(t, m, held)
+			got := m.searchResults[0]
+			if got.IsPinned != pinned || got.Revision != current.Revision || got.ExpiresAt != current.ExpiresAt || got.ExpirationSource != current.ExpirationSource || got.ExpirationNeedsReview != current.ExpirationNeedsReview {
+				t.Fatal("held result regressed lifecycle metadata", got, current)
+			}
+			if got.Preview != before.Preview || got.MatchRow != before.MatchRow || got.MatchCol != before.MatchCol || got.Content != before.Content || got.IsDuplicate != before.IsDuplicate {
+				t.Fatal("reconciliation erased search-owned fields", got, before)
+			}
+			if strings.Contains(m.View(), "[Pinned]") != pinned {
+				t.Fatal("rendered stale pin label", m.View())
+			}
+			// Search summaries cannot become a content/revision base. Even if a newer
+			// writer changed content after this summary, opening must get one full read.
+			remote := current
+			remote.Content = "new full content after metadata"
+			remote, err = a.Save(remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m = drainTestCmd(t, m, m.requestOpen(other.ID, false, nil, false))
+			m = drainTestCmd(t, m, m.requestOpen(n.ID, false, &got, false))
+			if m.Note.Revision != remote.Revision || m.buffer.Text() != remote.Content || m.Note.IsPinned != pinned {
+				t.Fatal("search summary became editor CAS base", m.Note, m.buffer.Text(), remote)
+			}
+		})
 	}
 }
