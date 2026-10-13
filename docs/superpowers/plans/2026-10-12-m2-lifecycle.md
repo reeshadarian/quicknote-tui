@@ -12,7 +12,7 @@
 
 **Baseline:** local and GitHub `dev/v2` = `0778085c5815d56a439550ccd9e898fa79935dc1`; `main` = `d3e5a119cdf12ec99fcc14a62545f60729adea54`. Inspected 2026-10-12. Existing untracked `.config/`, `.local/`, `vim_profile.log` belong to the user. No M2 implementation or new tests have run during planning.
 
-**Approval:** The user approved this plan, its schema/privacy amendment and agent execution on 2026-10-12. Execution is underway on dev/v2: QN-028 is accepted, QN-029 is accepted, then QN-030–032 follow sequentially. Historical baseline below records planning state; the living ledger records current evidence.
+**Approval:** The user approved this plan, its schema/privacy amendment and agent execution on 2026-10-12. Execution is underway on dev/v2: QN-028–030 are accepted; QN-031–032 continue sequentially. Historical baseline below records planning state; the living ledger records current evidence.
 
 ## Global Constraints
 
@@ -157,9 +157,9 @@ QN-030 adds `requestPinToggle() tea.Cmd` in `tui_lifecycle.go`. QN-031 adds `new
 
 **Files:** create `pinning_test.go`; modify `tui_lifecycle.go`, `actions.go`, `tui.go`, `ttl_picker.go` only for availability/status, ledger/handoff. Store semantics are QN-028 ApplyPinnedCAS; no sidebar implementation.
 
-- [ ] **1. Baseline/failing tests:** `TestQN030T20PinSuppressesExpiry`, `TestQN030UnpinNeverRearms`, `TestQN030PinRace`. Pin a note due in 15m: atomically set pinned, clear deadline/source, observe its current directive and advance revision once; sweep past deadline/restart/save leaves it active. Editing `#kill` while pinned cannot leave a hidden deadline. Confirm unpin without a timer; cancel preserves pin/revision. Unpin restart with unchanged directive stays active; setting a new TTL afterwards works. Manual delete of pinned note still moves it into recoverable Trash. Failures/CAS races do not clear someone else's updated metadata.
-- [ ] **2. Red → implement UI:** enable `note.pin` with pin/unpin title and explanations in current Commands, route through shared save/metadata dispatcher, default Cancel on unpin confirmation showing “no timer”. Dirty typing during result retains text. Disable in ghost/Trash. Expose Note.IsPinned in normal list/search results and reusable status/actions for future QN-024 sidebar. Do not reorder all notes or invent sidebar/search filters now.
-- [ ] **3. Green/full gates/commit:** targeted tests plus T-20 repetitions, common full gates and keyboard-only pin/unpin/cancel smoke. Update decision notes for cleared expiry, ledger/handoff; commit `QN-030: pin notes without resurrecting expiration`.
+- [x] **1. Baseline/failing tests:** `TestQN030T20PinSuppressesExpiry`, `TestQN030UnpinNeverRearms`, `TestQN030PinRace`. Pin a note due in 15m: atomically set pinned, clear deadline/source, observe its current directive and advance revision once; sweep past deadline/restart/save leaves it active. Editing `#kill` while pinned cannot leave a hidden deadline. Confirm unpin without a timer; cancel preserves pin/revision. Unpin restart with unchanged directive stays active; setting a new TTL afterwards works. Manual delete of pinned note still moves it into recoverable Trash. Failures/CAS races do not clear someone else's updated metadata.
+- [x] **2. Red → implement UI:** enable `note.pin` with pin/unpin title and explanations in current Commands, route through shared save/metadata dispatcher, default Cancel on unpin confirmation showing “no timer”. Dirty typing during result retains text. Disable in ghost/Trash. Expose Note.IsPinned in normal list/search results and reusable status/actions for future QN-024 sidebar. Do not reorder all notes or invent sidebar/search filters now.
+- [x] **3. Green/full gates/commit:** targeted tests plus T-20 repetitions, common full gates and keyboard-only pin/unpin/cancel smoke. Update decision notes for cleared expiry, ledger/handoff; commit `QN-030: pin notes without resurrecting expiration`.
 
 ## Task QN-031: ghost creation and safe conversion
 

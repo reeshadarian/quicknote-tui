@@ -1,7 +1,7 @@
 # Quicknote v2 — implementation progress
 
 Branch: `dev/v2`
-Latest implementation SHA: b1494c5419e46a4b20ba83fc22e35b7a876adcc6
+Latest implementation SHA: b4d606febd2217c5eaf00d0fbeab8acb03715e98
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
 Current task: QN-029 REVIEW in isolated branch; QN-030 follows coordinator acceptance (approved M2 execution)
 Updated: 2026-10-13 UTC
@@ -561,3 +561,13 @@ Commands now renders task-owned titles `Pin note: clear TTL` / `Unpin note: no t
 Files changed in correction: `actions.go`, `keymap.go`, `pinning_test.go`, `tui_async.go`, `tui_lifecycle.go`, ledger/handoff. Existing schema3, no real data/main/integration/push; previous human/CI/performance and normal-isolated-VCS-build limits remain NOT RUN/known. No additional acceptance blocker; coordinator owns independent acceptance/publication. Next QN-031 after QN-030 acceptance.
 
 Final rebuilt correction `python3 /tmp/qn030-pty.py` PASSED both default/legacy: keyboard-only pin/unpin/default Cancel/four-size/no-timer flow, exact metadata, restart quiet append/no historical directive rearm and SQLite integrity/FK/schema3. No Go changes after final gates. User steering changed all version-control operations to GitButler before correction commit; working fixes remain intact atop reviewed `911d0ea`, awaiting coordinator-authorized GitButler commit procedure. No git commit was attempted after that steering.
+
+### QN-030 GitButler integration acceptance — 2026-10-13 UTC
+
+DONE on dev/v2: isolated implementation `911d0eafa7f4fa5bdecb78643c212e211d2a2fca` was integrated with `but pick` as `808b6a8793b41a2dbba5f8b31e9a3e94339c62d2`; reviewed correction `b4d606febd2217c5eaf00d0fbeab8acb03715e98` committed only selected task hunks through GitButler. Both independent reviewers approved specification compliance and quality after one correction round. Commands now displays expiry-clearing/no-timer consequences at25x5; held search rows retain latest pin/unpin metadata while preserving preview/matches and complete-read/CAS pairing. Worker checkout and reviewed history remain intact.
+
+Coordinator primary-checkout gates PASSED after scoped integration: `CGO_ENABLED=1 go test -tags sqlite_fts5 -count=1 ./...`16.666s; same with `-race -count=1`23.883s; `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`; normal `CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .`; changed-file gofmt. Worker exact final gates and 20x regressions/full-read ownership1.301s plus default/legacy PTY are recorded above. Independent prepared harness pin/unpin result is recorded separately below. No production data/schema/retention/main changes; schema3. Human platform/clipboard, remoteCI and benchmarks NOT RUN. Next QN-031, then QN-032.
+
+Version-control steering: user replaced AGENTS instructions with GitButler-only operations. Installed CLI cannot use linked worktrees; enabled documented single-branch mode and performed integration in primary checkout. Automatic approval review rejected whole-file copying due possible unrelated overwrite; no copy occurred. GitButler confirmed the seven target files had no unrelated edits, and a context-guarded scoped patch applied only verified corrections. Selected GitButler hunks excluded all three pre-existing untracked user files. `but push dev/v2 --dry-run` confirmed only origin/dev/v2 would advance; target-main configuration is never used for land/pull. No reviewed history was rewritten.
+
+Independent coordinator prepared harness: Python imported `m2_pty` from `/tmp/quicknote-m2-integration/tests` and called `run_suite("/tmp/quicknote-m2", [("legacy pin/unpin/default Cancel/no rearm", pin_unpin)])`: PASSED1/1 exit0 after GitButler integration. Confirmed actual built-binary pin/unpin, defaultCancel, four sizes and quiet restart append/no-rearm. AGENTS now persists the user-provided GitButler rules and current next task.
