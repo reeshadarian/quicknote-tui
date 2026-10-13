@@ -111,6 +111,8 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 		return nil
 	}
 	switch c.Kind {
+	case "pin":
+		return m.confirmPin(c)
 	case "ttl":
 		return m.confirmTTL(c)
 	case "ghost":

@@ -1044,6 +1044,9 @@ func (m model) View() string {
 					prefix = "> "
 				}
 				preview := strings.ReplaceAll(strings.ReplaceAll(m.searchResults[i].Preview, "<<M_START>>", ""), "<<M_END>>", "")
+				if m.searchResults[i].IsPinned {
+					preview = "[Pinned] " + preview
+				}
 				lines = append(lines, prefix+preview)
 			}
 			body = strings.Join(lines, "\n")

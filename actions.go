@@ -141,6 +141,7 @@ func actionRegistry() []Action {
 		makeAction("confirmation.accept", "Accept selected choice", "Run only the explicitly selected confirmation", "Confirmation", []appState{stateConfirm}, "enter"),
 		makeAction("commands.open", "Commands", "Open the basic command menu (fuzzy palette is QN-023)", "Application", []appState{stateTyping, stateTrash, stateHelp}),
 		makeAction("keyboard.profile", "Switch keyboard profile", "Switch default/legacy profile and save keyboard.json", "Settings", nav),
+		makeAction("note.pin", "Pin note", "Clear expiration and keep this note from expiring", "Lifecycle", nav),
 		makeAction("ttl.set", "Set expiration", "Choose a durable expiration preset", "Lifecycle", nav, "alt+t"),
 		makeAction("ttl.cancel", "Cancel expiration picker", "Keep the draft unchanged", "Lifecycle", []appState{stateTTLPicker, stateTTLCustom}, "esc", "ctrl+c"),
 		makeAction("ttl.up", "Previous expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "up"),
@@ -202,7 +203,6 @@ func actionRegistry() []Action {
 		states                                 []appState
 	}{
 		{"ghost.new", "New ghost draft", "Create a memory-only draft", "Note", "QN-031", edit},
-		{"note.pin", "Pin or unpin", "Control automatic expiration", "Lifecycle", "QN-030", edit},
 		{"trash.deleteForever", "Delete forever", "Confirm permanently deleting this Trash entry", "Note", "QN-032", []appState{stateTrash}},
 		{"view.sidebar", "Toggle sidebar", "Show recent notes and tags", "View", "QN-024", nav},
 		{"theme.pick", "Change theme", "Preview and choose a validated theme", "Settings", "QN-033", nav},
@@ -215,6 +215,9 @@ func actionRegistry() []Action {
 		a = append(a, future)
 	}
 	for i := range a {
+		if a[i].ID == "note.pin" {
+			a[i].Enabled = pinEnabled
+		}
 		if a[i].ID == "ttl.set" {
 			a[i].Execute = func() tea.Msg { return ActionMsg{"ttl.set"} }
 			a[i].Enabled = ttlEnabled
@@ -273,4 +276,25 @@ func (m model) actionHelp(c ActionContext) string {
 		fmt.Fprintf(&b, "%s  %s%s\n", strings.Join(m.keyboard().keys(a), " / "), a.Title, suffix)
 	}
 	return b.String()
+}
+
+func pinEnabled(c ActionContext) (bool, string) {
+	if c.Note.IsGhost {
+		return false, "Ghosts cannot be pinned"
+	}
+	if c.State == stateTrash || c.Note.DeletedAt != "" {
+		return false, "Restore from Trash before pinning"
+	}
+	if c.Note.ID <= 0 {
+		return false, "Save this scratch draft before pinning"
+	}
+	return true, ""
+}
+
+func contextualAction(a Action, c ActionContext) Action {
+	if a.ID == "note.pin" && c.Note.IsPinned {
+		a.Title = "Unpin note"
+		a.Description = "Continue with no timer; the cleared expiration stays canceled"
+	}
+	return a
 }

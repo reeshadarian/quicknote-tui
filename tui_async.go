@@ -601,6 +601,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashMsg = reason
 			return m, nil
 		}
+		if intent.ID == "note.pin" {
+			cmd := m.requestPinToggle()
+			return m, cmd
+		}
 		if intent.ID == "ttl.set" {
 			cmd := m.openTTLPicker()
 			return m, cmd
@@ -621,6 +625,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if enabled, reason := a.Enabled(m.actionContext()); !enabled {
 				m.flashMsg = reason
 				return m, nil
+			}
+			if a.ID == "note.pin" {
+				cmd := m.requestPinToggle()
+				return m, cmd
 			}
 			if a.ID == "ttl.set" {
 				cmd := m.openTTLPicker()

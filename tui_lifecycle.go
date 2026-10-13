@@ -12,6 +12,7 @@ type lifecycleIntent struct {
 	Restore       RestoreMode
 	Pinned        bool
 	GuardTTL      bool
+	GuardPin      bool
 	SourceKey     int
 	SourceVersion uint64
 }
@@ -155,7 +156,7 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 	}
 	key := m.activeKey()
 	if _, busy := m.lifecycleRequests[key]; busy {
-		if intent.GuardTTL {
+		if intent.GuardTTL || intent.GuardPin {
 			if m.lifecycleQueued == nil {
 				m.lifecycleQueued = map[int]lifecycleIntent{}
 			}
@@ -180,6 +181,10 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 	delete(m.lifecycleQueued, key)
 	if intent.GuardTTL && (key != intent.SourceKey || m.activeKey() != key || d.localVersion != intent.SourceVersion || d.Note.DeletedAt != "") {
 		m.flashMsg = "Expiration canceled: draft changed"
+		return nil
+	}
+	if intent.GuardPin && (key != intent.SourceKey || m.activeKey() != key || d.localVersion != intent.SourceVersion || d.Note.DeletedAt != "" || d.Note.IsGhost || d.Note.IsPinned == intent.Pinned) {
+		m.flashMsg = "Pin change canceled: draft changed"
 		return nil
 	}
 	if intent.Kind == "expire" && !noteDue(d.Note, m.lifecycleNow()) {
@@ -297,10 +302,19 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	if r.Intent.GuardTTL && m.activeKey() == r.Key && m.flashMsg == "Setting expiration…" {
 		m.flashMsg = "Expiration updated"
 	}
-	for _, list := range [][]Note{m.notes, m.allNotes} {
+	if r.Intent.GuardPin && m.activeKey() == r.Key && m.flashMsg == "Updating pin…" {
+		if d.Note.IsPinned {
+			m.flashMsg = "Pinned; expiration cleared"
+		} else {
+			m.flashMsg = "Unpinned with no timer"
+		}
+	}
+	for _, list := range [][]Note{m.notes, m.allNotes, m.searchResults} {
 		for i := range list {
 			if list[i].ID == r.ID {
+				preview := list[i].Preview
 				list[i] = cloneNote(d.Note)
+				list[i].Preview = preview
 			}
 		}
 	}
@@ -361,4 +375,31 @@ func withAdjacentDeletion(base, known Note) (Note, bool) {
 	base.Revision = known.Revision
 	base.DeletedAt, base.DeletedTime, base.DeleteReason = known.DeletedAt, known.DeletedTime, known.DeleteReason
 	return base, true
+}
+
+// Pin changes share the existing content-save and metadata dispatcher. Unpin
+// needs explicit confirmation because its safe outcome is an active no-timer note.
+func (m *model) requestPinToggle() tea.Cmd {
+	if enabled, reason := pinEnabled(m.actionContext()); !enabled {
+		m.flashMsg = reason
+		return nil
+	}
+	if m.Note.IsPinned {
+		m.confirm("pin", "Unpin with no timer?", "Continue with no timer.\nThe cleared deadline will not restart.", "")
+		return nil
+	}
+	m.flashMsg = "Updating pin…"
+	return m.requestLifecycle(lifecycleIntent{Kind: "pin", Pinned: true, GuardPin: true, SourceKey: m.activeKey(), SourceVersion: m.localVersion})
+}
+func (m *model) confirmPin(c Confirmation) tea.Cmd {
+	if c.Key != m.activeKey() || c.Version != m.localVersion || !m.Note.IsPinned {
+		m.flashMsg = "Pin change canceled: draft changed"
+		return nil
+	}
+	if enabled, reason := pinEnabled(m.actionContext()); !enabled {
+		m.flashMsg = reason
+		return nil
+	}
+	m.flashMsg = "Updating pin…"
+	return m.requestLifecycle(lifecycleIntent{Kind: "pin", Pinned: false, GuardPin: true, SourceKey: c.Key, SourceVersion: c.Version})
 }

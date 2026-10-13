@@ -196,7 +196,7 @@ func (m model) commandActions() []Action {
 	out := []Action{}
 	for _, a := range actionRegistry() {
 		if a.Available(context) && a.Category != "Cursor" && a.ID != "commands.open" {
-			out = append(out, a)
+			out = append(out, contextualAction(a, context))
 		}
 	}
 	return out
