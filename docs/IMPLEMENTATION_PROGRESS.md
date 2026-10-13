@@ -467,3 +467,7 @@ Only synthetic DB/backup/restore fixtures were used. No production notes/backups
 - `git diff --check` PASSED; `gofmt -l main.go db.go timestamp_order_test.go tui_session_test.go layout_test.go` produced no filenames.
 
 **Limits/data:** only synthetic temporary fixtures; schema stays 3 and no timestamp migration or production DB/backup operations. No parser changes, so fuzz not repeated. Human terminal/platform checks, remote CI and release benchmarks NOT RUN. Expression sorting may require a temporary sort; no index/schema redesign is included. Review/integration remains coordinator-owned; next dependent task QN-029 after BUG-14 acceptance. No push, main or root product-code changes.
+
+### QN-028 BUG-14 integration acceptance
+
+DONE on dev/v2 in `869a7d0e17c50d94b60f72dcdcae57bc421189af`. Independent scoped review approved both specification compliance and quality, including base-query red reproductions, twenty focused repetitions, focused race and quiet built-binary append preservation checks. Coordinator normal primary-checkout `CGO_ENABLED=1 go build -tags sqlite_fts5 -o /tmp/quicknote-m2 .` PASSED. Coordinator `python3 /tmp/quicknote-m2-integration/tests/m2_cli.py /tmp/quicknote-m2` PASSED 10/10, including mixed timestamp latest/title append regressions that previously failed on the old binary. Prepared scripts remain isolated pending final M2 integration. No Go changes after these gates, schema3, synthetic data only, main unchanged. Next QN-029 is in correction review; continue approved M2.
