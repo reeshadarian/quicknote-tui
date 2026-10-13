@@ -61,9 +61,12 @@ func (m *model) requestMaintenance() tea.Cmd {
 	for key, d := range m.drafts {
 		_, saving := m.saves[key]
 		_, mutating := m.lifecycleRequests[key]
+		_, queued := m.lifecycleQueued[key]
 		if d.Note.ID > 0 && (key == m.activeKey() || d.needsSave || d.saveErr != nil || saving || mutating) {
 			protected = append(protected, d.Note.ID)
-			if noteDue(d.Note, now) && d.saveErr == nil && !mutating {
+			// Confirmed user work owns its place behind a pending save. A later
+			// sweep can expire the note if that work leaves the deadline intact.
+			if noteDue(d.Note, now) && d.saveErr == nil && !mutating && !queued {
 				intent := lifecycleIntent{Kind: "expire"}
 				if m.lifecycleQueued == nil {
 					m.lifecycleQueued = map[int]lifecycleIntent{}
@@ -325,19 +328,11 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		// The held acknowledgment can establish the content base immediately before
 		// a later deletion; larger gaps still require a fresh full read.
 		if d.Note.Revision >= known.Revision {
-			if r.Intent.GuardGhost {
-				m.completeGhostConversion(r)
-				return m.resumeGhostTransition(r)
-			}
-			return m.finishExit()
+			return m.finishSupersededLifecycle(r)
 		}
 		combined, ok := withAdjacentDeletion(msg.Note, known)
 		if !ok {
-			if r.Intent.GuardGhost {
-				m.completeGhostConversion(r)
-				return m.resumeGhostTransition(r)
-			}
-			return m.finishExit()
+			return m.finishSupersededLifecycle(r)
 		}
 		msg.Note = combined
 	}
@@ -431,6 +426,28 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		key := *m.pendingAction
 		m.pendingAction = nil
 		return m.runAction(key)
+	}
+	return m.finishExit()
+}
+
+// A newer observation supersedes this acknowledgment, not its completion
+// responsibilities. Cancel dependent intent visibly rather than retrying it
+// with a summary revision that cannot establish the draft's content base.
+func (m *model) finishSupersededLifecycle(r lifecycleRequest) tea.Cmd {
+	_, queued := m.lifecycleQueued[r.Key]
+	delete(m.lifecycleQueued, r.Key)
+	if r.Intent.GuardGhost {
+		m.completeGhostConversion(r)
+	}
+	if queued {
+		m.flashMsg = "Queued change canceled: note changed; reopen and retry"
+	}
+	if r.Intent.GuardGhost {
+		return m.resumeGhostTransition(r)
+	}
+	if m.pendingAction != nil && m.pendingActionID == r.Key && m.activeKey() == r.Key && !m.exitPending() {
+		// New local edits still need the ordinary save/conflict gate.
+		return m.afterSave(*m.pendingAction)
 	}
 	return m.finishExit()
 }

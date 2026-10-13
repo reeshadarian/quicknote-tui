@@ -29,6 +29,7 @@ type loadRequest struct {
 	Generation           uint64
 	SourceID             int
 	SourceVersion        uint64
+	SourcePurged         bool  // explicit presence: imported revision zero is valid
 	PurgedSourceRevision int64 // confirmed deletion; never discard a newer or dirty source
 	TargetID             int
 	Trash                bool
@@ -210,13 +211,16 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		if d.needsSave {
 			return m.requestSave()
 		}
+		flashBeforeLifecycle := m.flashMsg
 		if intent, ok := m.lifecycleQueued[r.Key]; ok {
 			delete(m.lifecycleQueued, r.Key)
 			if cmd := m.startLifecycle(msg.Note.ID, d, intent); cmd != nil {
 				return cmd
 			}
 		}
-		m.flashMsg = "Saved"
+		if m.flashMsg == flashBeforeLifecycle {
+			m.flashMsg = "Saved"
+		}
 		if m.pendingAction != nil && m.pendingActionID == msg.Note.ID {
 			if m.exitPending() {
 				return m.finishExit()
@@ -248,7 +252,7 @@ func (m *model) requestOpen(id int, trash bool, match *Note, reload bool) tea.Cm
 	return m.requestLoad(r)
 }
 func (m *model) requestLoad(r loadRequest) tea.Cmd {
-	if r.PurgedSourceRevision == 0 {
+	if !r.SourcePurged {
 		m.stashNote()
 	}
 	m.openGeneration++
@@ -312,7 +316,7 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 		r.TargetID, r.Trash = msg.Note.ID, known.DeletedAt != ""
 		return m.requestLoad(r)
 	}
-	if r.PurgedSourceRevision > 0 && !m.needsSave && m.Note.Revision <= r.PurgedSourceRevision {
+	if r.SourcePurged && !m.needsSave && m.Note.Revision <= r.PurgedSourceRevision {
 		delete(m.drafts, r.SourceKey)
 	} else {
 		m.stashNote()

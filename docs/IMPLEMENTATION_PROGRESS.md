@@ -1,9 +1,9 @@
 # Quicknote v2 — implementation progress
 
-Branch: `dev/v2`
+Branch: `qn-v2/m2-final-controller`
 Latest implementation SHA: 7f36a84c6bb7d47fefe95b5e996166c73f16e6ee
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-032 REVIEW; final M2 acceptance pending (approved execution)
+Current task: final M2 controller correction REVIEW; final M2 acceptance pending (approved execution)
 Updated: 2026-10-13 UTC
 
 ## Completed repository changes
@@ -755,3 +755,32 @@ Two independent reviewers approved the important scrolling correction. Final cor
 **NOT RUN:** human Fedora/Zsh/Kitty/tmux/real clipboard checks, remote CI, release benchmarks. No production backup/migration/deletion test. Next: integrate reproducible M2 scripts, run final full/race/vet/normal-build/repeated/fuzz/CLI/PTY gates and one broad milestone review. QN-018 is READY after M2 acceptance (QN-009 dependency met); do not begin it during final M2 work. The earlier extra origin/QN-028 ref remains documented.
 
 Coordinator integrated-tree check PASSED: `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache go test -tags sqlite_fts5 -count=1 -run 'TestQN032T21|TestQN032T31|TestQN032DeleteForeverGuard' .` —0.018s. Final aggregate gates remain required.
+
+## Final M2 controller correction — 2026-10-13 UTC
+
+**REVIEW**, one consolidated correction wave on `qn-v2/m2-final-controller`, anchored above immutable verified harness head **50ca49326a0512c53468f672dde978fb61176617**. The correction commit contains this entry; its immutable SHA is recorded in `.superpowers/sdd/2026-10-12-m2-lifecycle/final-fix-report.md`. All QN-028–032 task implementations were previously accepted; the broad milestone review found two Important and two Minor interactions, all addressed here. Coordinator owns the one scoped final re-review, aggregate acceptance, integration/publication and DONE. QN-018 remains outside this correction.
+
+**Changed files:** `tui_lifecycle.go`, `tui_async.go`, `trash_ui.go`, new `m2_controller_review_test.go`, this living ledger and `docs/SESSION_HANDOFF.md`.
+
+- M2-F1: automatic maintenance preserves an existing per-draft queued intent while its prerequisite save completes. Confirmed Never/pin/keep-original ghost conversion retains ownership when the old deadline becomes due. The next ordinary maintenance pass still expires eligible original notes after ghost conversion or cancellation; no second queue or permanent protection was added.
+- M2-F2: both superseded-success early paths settle dependent queued work with visible **“Queued change canceled: note changed; reopen and retry”** feedback. Reopening obtains a complete current content/revision snapshot and an explicit retry can apply Never. No old buffer adopts a newer summary revision. Matching pending navigation reuses the ordinary save/conflict gate; exit keeps all-draft checks, another owner's pending action is untouched, and started successful ghost conversion still retains its captured snapshot.
+- Revision-zero Minor: `loadRequest.SourcePurged` explicitly marks confirmed deletion, independent of its valid zero revision. Clean-source cleanup survives maintenance and full target refetch. Newer dirty/version/revision source recovery and load failures remain retained; this changes no SQLite deletion or retention semantics.
+- Feedback Minor: a declined queued operation's changed cancellation message survives successful content-save completion. Ordinary saves still show Saved, and started TTL operations retain their normal completion feedback.
+
+**RED/GREEN, synthetic fixtures only:** before product edits the unmodified Important overlay failed **0.117s** (Never/pin/ghost replaced; Never orphaned), and the unmodified zero-revision overlay failed **0.010s**. The new four regression groups failed **0.568s** on all four findings, then passed **0.571s**. Scoped self-review added a valid-TTL feedback case that caught an initial correction regression (**FAILED0.019s**); refining dispatch feedback preserved normal success and cancellation. Final **21 subcases** passed **0.574s**. Existing tests and independent overlays were not modified or weakened.
+
+**Final gates PASSED**, Linux amd64, Go `go1.26.8-X:nodwarf5`; every following Go command uses `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`:
+
+- `go test -tags sqlite_fts5 -count=1 -run '^TestM2Review' .` — **0.574s**.
+- `go test -tags sqlite_fts5 -overlay=/tmp/m2-final-review-overlay.json -count=1 -run '^TestFinalM2' .` — **0.119s**, unmodified independent Important assertions.
+- `go test -tags sqlite_fts5 -overlay=/tmp/qn032-spec-fix1-overlay.json -count=1 -run '^TestSpecQN032ZeroRevisionPurgeCleanup$' .` — **0.011s**, unmodified independent Minor assertion.
+- `go test -tags sqlite_fts5 -count=1 ./...` — **23.922s**.
+- `go test -tags sqlite_fts5 -race -count=1 ./...` — **92.960s**.
+- `go vet -tags sqlite_fts5 ./...` — exit0.
+- `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-final-controller .` — exit0, normal primary-checkout build without VCS fallback.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestM2Review|TestQN028(DirtyDraftExpiry|FailedDraftSaveDelaysExpiry|Review)|TestQN029(Queue|Canceled|Continuation|ReviewQueued)|TestQN031(LateTrash|Review)|TestQN032ReviewDelete|TestQN011T17' .` — **15.551s**; covers changed ordering, source/continuation ownership, original CAS bases, delayed ghost writes, purge cleanup and independent-process concurrency.
+- `gofmt -l tui_lifecycle.go tui_async.go trash_ui.go m2_controller_review_test.go` — no filenames. Individual owned-path GitButler diff/added-line whitespace and conflict-marker audit replaces raw Git diff checks under current policy; exact selected commit evidence is in the report.
+
+Pre-refinement gates also passed full23.960s/race93.188s/repetition15.527s/vet/normal build; these precede the last feedback correction and are not substituted for final results above. The coordinator supplied byte-identical baseline50ca full23.344s/vet/normal-build and CLI10/10/PTY15/15; this implementer reran the targeted failing baseline rather than duplicating that full baseline. Final aggregate CLI/PTY, bounded fuzz and milestone-wide repeats are coordinator-owned and **NOT RUN by this implementer**. Human Fedora/Zsh/Kitty/tmux/real clipboard, remote CI and release benchmarks are also **NOT RUN**.
+
+**Safety/rulings:** schema stays **3**, specification **1.1.0**, no migration/retention change or production notes/backup/deletion operation. No user config/log/database contents were read in this correction; the previously disclosed inspection deviation remains historical. Only the existing queue/ack/load ownership seams changed. GitButler inspection required automatically reviewed metadata escalation after a read-only SQLite error; no raw Git, remote action, branch switch, integration or reviewed-history rewrite. Source50ca and other agent work remain intact. Next: coordinator's scoped review of these four corrections and any new breakage, then final M2 acceptance; QN-018 follows only after that acceptance.

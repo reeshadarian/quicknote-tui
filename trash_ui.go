@@ -192,7 +192,7 @@ func (m *model) completeDeleteForever(r lifecycleRequest) tea.Cmd {
 	if m.activeKey() == r.Key && m.localVersion == r.Version {
 		// The load owns clean-source cleanup through reconciliation, including
 		// intervening events that might snapshot the departing draft again.
-		return m.requestLoad(loadRequest{TargetID: -1, Trash: true, PurgedSourceRevision: r.Expected})
+		return m.requestLoad(loadRequest{TargetID: -1, Trash: true, SourcePurged: true, PurgedSourceRevision: r.Expected})
 	}
 	return m.finishExit()
 }
