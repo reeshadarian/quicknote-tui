@@ -193,7 +193,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 			return m.requestSave()
 		}
 		if intent, ok := m.lifecycleQueued[r.Key]; ok {
-			return m.startLifecycle(msg.Note.ID, d, intent)
+			if cmd := m.startLifecycle(msg.Note.ID, d, intent); cmd != nil {
+				return cmd
+			}
 		}
 		m.flashMsg = "Saved"
 		if m.pendingAction != nil && m.pendingActionID == r.Key {
@@ -210,7 +212,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		return m.saveSnapshot(n, d.localVersion)
 	}
 	if intent, ok := m.lifecycleQueued[r.Key]; ok {
-		return m.startLifecycle(msg.Note.ID, d, intent)
+		if cmd := m.startLifecycle(msg.Note.ID, d, intent); cmd != nil {
+			return cmd
+		}
 	}
 	return m.finishExit()
 }
@@ -537,13 +541,20 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.bindDraft()
 	m.clampDraftCursor()
-	if intent, ok := msg.(ActionMsg); ok && m.state == stateConfirm {
+	if intent, ok := msg.(ActionMsg); ok && (m.state == stateConfirm || m.state == stateTTLPicker || m.state == stateTTLCustom) {
 		if a, found := findAction(intent.ID); found && a.Available(m.actionContext()) {
+			if m.state != stateConfirm {
+				cmd := m.ttlPickerKey(a.Execute().(tea.KeyMsg).String())
+				return m, cmd
+			}
 			msg = a.Execute()
 		} else {
 			m.flashMsg = "Action unavailable"
 			return m, nil
 		}
+	}
+	if mouse, ok := msg.(tea.MouseMsg); ok && m.state == stateTyping && mouse.Action == tea.MouseActionPress && mouse.Button == tea.MouseButtonLeft && m.ttlStatusRegion().Contains(mouse.X, mouse.Y) {
+		return m.Update(ActionMsg{"ttl.set"})
 	}
 	if mouse, ok := msg.(tea.MouseMsg); ok && isOverlay(m.state) {
 		if m.state == stateHelp {
@@ -566,6 +577,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncSummary()
 		return m, cmd
 	}
+	if key, ok := msg.(tea.KeyMsg); ok && (m.state == stateTTLPicker || m.state == stateTTLCustom) {
+		if a, found := m.boundAction(key.String(), m.actionContext()); found {
+			key = a.Execute().(tea.KeyMsg)
+		} else if _, old := actionForKey(key.String(), m.actionContext()); old {
+			return m, nil
+		}
+		if m.state == stateTTLCustom && key.String() != "esc" && key.String() != "ctrl+c" && key.String() != "enter" {
+			cmd := m.ttlInputMessage(key)
+			return m, cmd
+		}
+		cmd := m.ttlPickerKey(key.String())
+		return m, cmd
+	}
 	explicit := false
 	if intent, ok := msg.(ActionMsg); ok {
 		a, found := findAction(intent.ID)
@@ -576,6 +600,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if enabled, reason := a.Enabled(m.actionContext()); !enabled {
 			m.flashMsg = reason
 			return m, nil
+		}
+		if intent.ID == "ttl.set" {
+			cmd := m.openTTLPicker()
+			return m, cmd
 		}
 		if intent.ID == "commands.open" {
 			m.openCommands()
@@ -593,6 +621,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if enabled, reason := a.Enabled(m.actionContext()); !enabled {
 				m.flashMsg = reason
 				return m, nil
+			}
+			if a.ID == "ttl.set" {
+				cmd := m.openTTLPicker()
+				return m, cmd
 			}
 			if a.ID == "commands.open" {
 				m.openCommands()
@@ -637,6 +669,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	beforeID, beforeContent := m.activeKey(), bufferToString(m.buffer)
 	var cmd tea.Cmd
 	m, cmd = m.updateAsync(msg)
+	if m.state == stateTTLCustom {
+		cmd = tea.Batch(cmd, m.ttlInputMessage(msg))
+	}
 	_, keyEdit := msg.(tea.KeyMsg)
 	if keyEdit && m.activeKey() == beforeID && bufferToString(m.buffer) != beforeContent {
 		key := msg.(tea.KeyMsg)
@@ -977,6 +1012,9 @@ func (m model) saveStatus() string {
 	}
 	if m.actionPending {
 		return "Working…"
+	}
+	if _, ok := m.lifecycleRequests[m.activeKey()]; ok {
+		return "Saving…"
 	}
 	if _, ok := m.saves[m.activeKey()]; ok {
 		return "Saving…"

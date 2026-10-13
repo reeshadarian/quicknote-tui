@@ -72,7 +72,11 @@ func (m model) confirmationView() string {
 	if m.confirmation.Kind == "reload" {
 		footer = "Esc Cancel · " + m.shortcut("conflict.reload") + " Confirm\n" + choice
 	}
-	return m.panel(m.confirmation.Title, m.confirmation.Body, footer)
+	body := m.confirmation.Body
+	if m.confirmation.Kind == "ttl" {
+		body = m.ttlConfirmationBody(m.timerNow)
+	}
+	return m.panel(m.confirmation.Title, body, footer)
 }
 func (m *model) confirmationKey(key string) tea.Cmd {
 	if m.confirmation.Kind == "reload" && key == strings.ToLower(m.shortcut("conflict.reload")) {
@@ -107,6 +111,8 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 		return nil
 	}
 	switch c.Kind {
+	case "ttl":
+		return m.confirmTTL(c)
 	case "ghost":
 		return m.mutate("ghost")
 	case "purge":

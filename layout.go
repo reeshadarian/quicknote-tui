@@ -9,6 +9,16 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// HitRegion describes only fully visible terminal cells, with exclusive bounds.
+type HitRegion struct {
+	X, Y, Width, Height int
+	ActionID            string
+}
+
+func (r HitRegion) Contains(x, y int) bool {
+	return r.Width > 0 && r.Height > 0 && x >= r.X && y >= r.Y && x < r.X+r.Width && y < r.Y+r.Height
+}
+
 type Layout struct {
 	Width, Height, EditorHeight, Gutter, TextWidth int
 	Compact                                        bool
