@@ -217,9 +217,9 @@ func (m model) commandView() string {
 	height := max(1, m.viewport.Height)
 	visible := max(1, height-2)
 	start := max(0, m.commandIndex-visible+1)
-	// In a short panel, preceding wrapped rows must not hide the pin action's
-	// immediate expiration consequence before the user dispatches it.
-	if height <= 5 && m.commandIndex >= 0 && m.commandIndex < len(actions) && actions[m.commandIndex].ID == "note.pin" {
+	// In a short panel, preceding wrapped rows must not hide the selected
+	// lifecycle action or its immediate consequence.
+	if height <= 5 && m.commandIndex >= 0 && m.commandIndex < len(actions) && (actions[m.commandIndex].ID == "note.pin" || actions[m.commandIndex].ID == "note.restore" || strings.HasPrefix(actions[m.commandIndex].ID, "trash.")) {
 		start = m.commandIndex
 	}
 	for i := start; i < min(len(actions), start+visible); i++ {
@@ -228,7 +228,7 @@ func (m model) commandView() string {
 		if i == m.commandIndex {
 			prefix = "> "
 		}
-		enabled, reason := a.Enabled(ActionContext{State: m.commandReturn, Note: m.Note, Dirty: m.needsSave})
+		enabled, reason := a.Enabled(ActionContext{State: m.commandReturn, Note: m.Note, Dirty: m.needsSave, UndoReason: m.undoTrashReason(m.timerNow)})
 		line := prefix + a.Title + " [" + strings.Join(m.keyboard().keys(a), "/") + "]"
 		if !enabled {
 			line += " — " + reason

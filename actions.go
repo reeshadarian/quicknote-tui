@@ -7,9 +7,10 @@ import (
 )
 
 type ActionContext struct {
-	State appState
-	Note  Note
-	Dirty bool
+	State      appState
+	Note       Note
+	Dirty      bool
+	UndoReason string
 }
 type Action struct {
 	ID, Title, Description, Category string
@@ -151,6 +152,8 @@ func actionRegistry() []Action {
 		makeAction("note.new", "New note", "Create a titleless scratch draft", "Note", edit, "ctrl+n"),
 		makeAction("note.trash", "Move to Trash", "Keep a persisted note recoverable for 72 hours", "Note", edit, "ctrl+d"),
 		makeAction("note.ghost", "Convert ghost mode", "Duplicate safely or explicitly persist a ghost", "Note", edit, "ctrl+g"),
+		makeAction("trash.deleteForever", "Delete forever", "Permanently delete this Trash entry after confirmation", "Note", []appState{stateTrash}),
+		makeAction("trash.undoLast", "Undo last move to Trash", "Restore the original note without a timer", "Note", nav),
 		makeAction("note.restore", "Restore note", "Restore this Trash entry", "Note", []appState{stateTrash}, "ctrl+r"),
 		makeAction("note.promote", "Promote note", "Save and move the note to the recent front", "Note", edit, "ctrl+u"),
 		makeAction("note.export", "Export note", "Write the draft to a Markdown file", "Files", edit, "ctrl+s"),
@@ -203,7 +206,6 @@ func actionRegistry() []Action {
 		id, title, description, category, task string
 		states                                 []appState
 	}{
-		{"trash.deleteForever", "Delete forever", "Confirm permanently deleting this Trash entry", "Note", "QN-032", []appState{stateTrash}},
 		{"view.sidebar", "Toggle sidebar", "Show recent notes and tags", "View", "QN-024", nav},
 		{"theme.pick", "Change theme", "Preview and choose a validated theme", "Settings", "QN-033", nav},
 		{"view.motion", "Reduce motion", "Control optional UI transitions", "Settings", "QN-037", nav},
@@ -222,14 +224,16 @@ func actionRegistry() []Action {
 			a[i].Execute = func() tea.Msg { return ActionMsg{"ttl.set"} }
 			a[i].Enabled = ttlEnabled
 		}
-		if a[i].ID == "note.restore" {
-			a[i].Enabled = func(c ActionContext) (bool, string) {
-				if c.Note.ID <= 0 {
-					return false, "Trash is empty"
-				}
-				return true, ""
-			}
+		if a[i].ID == "note.restore" || a[i].ID == "trash.deleteForever" {
+			a[i].Enabled = trashEnabled
 		}
+		if a[i].ID == "trash.deleteForever" {
+			a[i].Dangerous = true
+		}
+		if a[i].ID == "trash.undoLast" {
+			a[i].Enabled = func(c ActionContext) (bool, string) { return c.UndoReason == "", c.UndoReason }
+		}
+
 		if a[i].ID == "note.ghost" || a[i].ID == "conflict.reload" {
 			a[i].Dangerous = true
 		}
@@ -244,7 +248,9 @@ func findAction(id string) (Action, bool) {
 	}
 	return Action{}, false
 }
-func (m model) actionContext() ActionContext { return ActionContext{m.state, m.Note, m.needsSave} }
+func (m model) actionContext() ActionContext {
+	return ActionContext{State: m.state, Note: m.Note, Dirty: m.needsSave, UndoReason: m.undoTrashReason(m.timerNow)}
+}
 func actionForKey(key string, c ActionContext) (Action, bool) {
 	for _, a := range actionRegistry() {
 		if a.Available(c) {

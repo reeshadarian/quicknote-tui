@@ -360,7 +360,7 @@ func TestQN012ReloadCancelAndCopyLateResultKeepDraft(t *testing.T) {
 func TestQN012MutationWhileTypingKeepsRecoveryDraft(t *testing.T) {
 	m, a, _, first, _ := asyncModel(t)
 	m, cmd := rawUpdate(m, tea.KeyMsg{Type: tea.KeyCtrlD})
-	result := cmd().(mutationResult)
+	result := cmd().(lifecycleResult)
 	m = typeTest(m, "during delete")
 	text := bufferToString(m.buffer)
 	m = drainTestCmd(t, m, func() tea.Msg { return result })
@@ -706,6 +706,8 @@ func TestQN012AsyncRestoreDoesNotResetDeadline(t *testing.T) {
 	m.activateNote()
 	m.state = stateTrash
 	m = updateTest(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updateTest(t, m, keyMessage("tab"))
+	m = updateTest(t, m, keyMessage("enter"))
 	if m.activeID() != n.ID || m.state != stateTyping || m.Note.ExpiresAt.Valid {
 		t.Fatal("restored wrong note or rearmed deadline")
 	}

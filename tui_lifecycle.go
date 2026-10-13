@@ -7,16 +7,18 @@ import (
 )
 
 type lifecycleIntent struct {
-	Kind          string
-	Expiration    ExpirationChoice
-	Restore       RestoreMode
-	Pinned        bool
-	GuardTTL      bool
-	GuardPin      bool
-	GuardGhost    bool
-	GhostContent  string
-	SourceKey     int
-	SourceVersion uint64
+	Kind           string
+	Expiration     ExpirationChoice
+	Restore        RestoreMode
+	Pinned         bool
+	GuardTTL       bool
+	GuardPin       bool
+	GuardGhost     bool
+	GuardTrash     bool
+	SourceRevision int64
+	GhostContent   string
+	SourceKey      int
+	SourceVersion  uint64
 }
 type lifecycleRequest struct {
 	Key                 int
@@ -158,7 +160,7 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 	}
 	key := m.activeKey()
 	if _, busy := m.lifecycleRequests[key]; busy {
-		if intent.GuardTTL || intent.GuardPin || intent.GuardGhost {
+		if intent.GuardTTL || intent.GuardPin || intent.GuardGhost || intent.GuardTrash || intent.Kind == "trash" {
 			if m.lifecycleQueued == nil {
 				m.lifecycleQueued = map[int]lifecycleIntent{}
 			}
@@ -193,6 +195,10 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 		m.flashMsg = "Pin change canceled: draft changed"
 		return nil
 	}
+	if intent.GuardTrash && (m.activeKey() != intent.SourceKey || d.localVersion != intent.SourceVersion || d.Note.Revision != intent.SourceRevision || d.Note.DeletedAt == "") {
+		m.flashMsg = "Trash action canceled: note changed"
+		return nil
+	}
 	if intent.Kind == "expire" && !noteDue(d.Note, m.lifecycleNow()) {
 		return nil
 	}
@@ -201,7 +207,9 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 	}
 	r := lifecycleRequest{key, d.Note.ID, d.Note.Revision, d.localVersion, m.nextRequest(), intent}
 	m.lifecycleRequests[key] = r
-	now, store := m.lifecycleNow(), m.store
+	// Mutations sample the action clock; timerNow is only a display/maintenance snapshot.
+	now, store := m.ttlNow(), m.store
+	snapshot := cloneNote(d.Note)
 	return func() tea.Msg {
 		var n Note
 		var e error
@@ -222,8 +230,11 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 			}
 		case "trash", "ghostTrash":
 			n, e = store.TrashSnapshotCAS(r.ID, r.Expected, DeleteManual, now)
-		case "restore":
+		case "restore", "undoTrash":
 			n, e = store.RestoreSnapshotCAS(r.ID, r.Expected, intent.Restore, now)
+		case "deleteForever":
+			n = snapshot
+			e = store.DeleteTrashCAS(r.ID, r.Expected)
 		default:
 			e = fmt.Errorf("unknown lifecycle operation")
 		}
@@ -273,7 +284,26 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	}
 	delete(m.lifecycleRequests, r.Key)
 	m.stashNote()
+	trashAction := r.Intent.GuardTrash || r.Intent.Kind == "undoTrash"
+	if trashAction && msg.Err != nil {
+		delete(m.lifecycleQueued, r.Key)
+		m.showError("Trash action failed", msg.Err)
+		return nil
+	}
+	if msg.Err == nil {
+		m.recordTrashUndo(r, msg.Note)
+		if r.Intent.Kind == "deleteForever" {
+			return m.completeDeleteForever(r)
+		}
+		if (r.Intent.Kind == "restore" || r.Intent.Kind == "undoTrash") && m.trashUndo.ID == r.ID && m.trashUndo.Revision == r.Expected {
+			m.trashUndo = TrashUndo{}
+		}
+	}
 	d, ok := m.drafts[r.Key]
+	if !ok && msg.Err == nil && r.Intent.Kind == "undoTrash" {
+		d = EditorDraft{Note: cloneNote(msg.Note), buffer: stringToBuffer(msg.Note.Content), viewportTop: new(int), localVersion: r.Version}
+		ok = true
+	}
 	if !ok {
 		return nil
 	}
@@ -311,6 +341,13 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		}
 		msg.Note = combined
 	}
+	if (r.Intent.Kind == "restore" || r.Intent.Kind == "undoTrash") && d.Note.Revision != r.Expected && d.Note.Revision != msg.Note.Revision {
+		if d.needsSave || d.saveErr != nil {
+			m.flashMsg = "Restored; retained draft needs conflict recovery"
+			return m.finishExit()
+		}
+		d = EditorDraft{Note: cloneNote(msg.Note), buffer: stringToBuffer(msg.Note.Content), viewportTop: new(int), localVersion: r.Version}
+	}
 	// Metadata acknowledgments never replace the draft's buffer or history.
 	d.Note = cloneNote(msg.Note)
 	d.Note.Content = d.buffer.Text()
@@ -321,6 +358,22 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	}
 	m.drafts[r.Key] = d
 	recovery := m.installLifecycleDraft(r.Key, d)
+	if r.Intent.Kind == "trash" {
+		m.flashMsg = "Moved to Trash · Undo via Commands"
+	}
+	if r.Intent.Kind == "restore" || r.Intent.Kind == "undoTrash" {
+		m.flashMsg = "Restored without timer"
+		if r.Intent.Restore == RestoreResetDirective {
+			m.flashMsg = "Restored with reset timer"
+		}
+		if m.activeKey() == r.Key {
+			m.saveErr = d.saveErr
+			if m.state == stateTrash {
+				m.clearOverlays(stateTyping)
+			}
+		}
+	}
+
 	if r.Intent.GuardTTL && m.activeKey() == r.Key && m.flashMsg == "Setting expiration…" {
 		m.flashMsg = "Expiration updated"
 	}
@@ -348,6 +401,18 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	}
 	if recovery != nil {
 		return recovery
+	}
+	if (r.Intent.Kind == "restore" || r.Intent.Kind == "undoTrash") && !m.needsSave && m.saveErr == nil && !m.loadPending && m.pendingAction == nil && (m.state == stateTyping || m.state == stateTrash) {
+		sourceKey, sourceVersion := r.Key, r.Version
+		if r.Intent.Kind == "undoTrash" {
+			sourceKey, sourceVersion = r.Intent.SourceKey, r.Intent.SourceVersion
+		}
+		if m.activeKey() == sourceKey && m.localVersion == sourceVersion {
+			return m.requestOpen(r.ID, false, nil, false)
+		}
+	}
+	if r.Intent.Kind == "trash" && m.activeKey() == r.Key && m.localVersion == r.Version && m.state == stateTrash && m.pendingAction == nil {
+		return m.requestOpen(-1, false, nil, false)
 	}
 	if d.Note.DeletedAt == "" && d.needsSave {
 		if m.activeKey() == r.Key {

@@ -120,12 +120,18 @@ func (s *SQLiteStore) RestoreSnapshotCAS(id NoteID, expected int64, mode Restore
 		if n.DeletedAt == "" {
 			return n, ErrWrongState
 		}
+		// A delayed UI action must not extend the elapsed recovery window even
+		// when periodic maintenance has not removed this row yet. Uncertain
+		// legacy timestamps remain recoverable rather than guessing an age.
+		if at, err := ParseLifecycleTime(n.DeletedAt); err == nil && now.After(at.Add(72*time.Hour)) {
+			return n, ErrNotFound
+		}
 		if mode != RestoreWithoutTimer && mode != RestoreResetDirective {
 			return n, ErrWrongState
 		}
 		if mode == RestoreResetDirective {
 			d, e := ParseKillDirective(n.Content)
-			if e != nil || !d.Present || n.ExpirationSource != ExpirationDirective || n.IsPinned {
+			if e != nil || !d.Present || n.ExpirationSource != ExpirationDirective || n.IsPinned || n.ExpirationNeedsReview {
 				return n, fmt.Errorf("no validated directive timer to reset")
 			}
 			n.KillHash = ""

@@ -3,7 +3,7 @@
 Branch: `dev/v2`
 Latest implementation SHA: f2bbf919e3beb672f2169567712705b0643b9119
 Baseline main SHA: `d3e5a119cdf12ec99fcc14a62545f60729adea54`
-Current task: QN-031 DONE; QN-032 next (approved M2 execution)
+Current task: QN-032 REVIEW; final M2 acceptance pending (approved execution)
 Updated: 2026-10-13 UTC
 
 ## Completed repository changes
@@ -670,3 +670,36 @@ Final worker gates **PASSED**, with `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache`:
 **Next:** QN-032 Trash restore/undo/permanent deletion. Record metadata-only Undo for successful manual `trash` and `ghostTrash` acknowledgments, including late successes with inactive ghosts. Preserve CAS bases/newest draft recovery. Complete approved M2 and final milestone gates; do not start unrelated M3 work yet.
 
 Coordinator integrated-tree checks **PASSED**: `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache go test -tags sqlite_fts5 -count=1 -run 'TestQN031|TestQN017GhostConfirmation' .` —1.313s; `CGO_ENABLED=1 GOCACHE=/tmp/qn031-go-cache go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn031-integrated .` —exit0, normal build. Full/race were not redundantly rerun on these byte-identical integrated Go files; final M2 gates remain required after QN-032.
+
+## QN-032 — Recoverable Trash, restore choices and confirmed deletion (2026-10-13 UTC)
+
+**REVIEW**, assigned branch `qn-v2/QN-032-trash`, base `b38b0d6bdde52772257b8e0981d8f92b3bfed72a`. Implementation is the commit containing this entry; immutable SHA is recorded in `.superpowers/sdd/2026-10-12-m2-lifecycle/task-5-report.md`. Coordinator owns independent reviews, integration/publication, final M2 acceptance and DONE. Primary checkout has one product writer; no branch switching, main changes or pushes.
+
+**Files:** new `trash_ui.go`, `trash_ui_test.go`, `trash_lifecycle_test.go`; modified `actions.go`, `async_test_helpers_test.go`, `ghost.go`, `keymap.go`, `overlays.go`, `store_lifecycle.go`, `tui.go`, `tui_async.go`, `tui_async_test.go`, `tui_lifecycle.go`, keyboard documentation, this ledger and handoff.
+
+Trash previews show reason/deletion/recovery deadline, reject text/paste/format/math edits, and scroll through the entire note. Search opens the correct read-only identity. Restore uses existing Cancel/Tab/Left/Right/Enter confirmation, offers no-timer restore first, and offers reset only for a validated remembered directive. Without-timer restore observes unchanged directives, preventing rearm after save/restart/unpin; reset starts a full duration at the actual action clock. Pinned/invalid/preset/uncertain timers do not offer an unsafe reset. Restore and Delete forever guard identity, local version, revision and state and retain recoverable failures.
+
+`TrashUndo` contains only original ID, deletion revision and recovery bound; content/history remain with the original persisted row and ordinary per-note draft. Successful manual `trash` and `ghostTrash` acknowledgments record Undo even when late/inactive or superseded by newer observed metadata. Existing request generations select the latest manual intent across delayed results and backward clock adjustments. Undo restores the same ID without a timer and retains history; stale remote restore/edit/purge cannot overwrite newer content. Clean unchanged initiators return to the restored note, while newer active editing is preserved. Ctrl+Z remains text undo.
+
+Delete forever uses `DeleteTrashCAS`; default Cancel and explicitly labeled Delete forever are separate from normal deletion. It returns to Trash with an empty state when appropriate. Transaction failures leave note/tags/FTS intact. Empty persisted notes now use normal soft Trash. Unsaved/ghost discard removes session references without creating Trash; an already-running first save is acknowledged before its assigned ID is trashed. The obsolete TUI mutation/PurgeCAS path was removed in favor of the existing lifecycle/save controller. No second queue, bulk-delete feature, schema change, M3 work or secure-erasure claim.
+
+**Authorized scope seams:** coordinator approved `store_lifecycle.go` retention validation because delayed restore previously allowed >72-hour recovery before maintenance. Exact boundary remains allowed; malformed legacy deletion times remain recoverable instead of guessing age. Coordinator approved extraction of existing ghost cleanup into `discardMemoryDraft` in `ghost.go`, preserving `discardGhost`, privacy/export invalidation and first-save acknowledgment. Actual-time mutations reuse existing injected-or-real `ttlNow` in `startLifecycle`; View still consumes captured timer state. Existing short-panel selection logic now includes Trash/Restore so preceding wrapped rows cannot obscure selected actions at 25×5.
+
+**RED evidence and corrections:** baseline full passed **17.963s**. Six new public-action tests failed for immediate restore/no Cancel, missing metadata, unavailable Undo/permanent delete, and permanent-delete empty-note behavior (**0.024s**, after correcting an expired fixture to actually be due); initial green **0.025s**. Expanded regressions caught restore after72h before purge, inaccessible long-preview tail, retained ID-zero draft references, lost Ctrl+D behind pending metadata, Undo not returning to its original note/history, and an older held acknowledgment stealing Undo after a clock adjustment. All reproduced and passed after fixes. Existing QN-012 tests now drive lifecycle results and explicit restore confirmation while preserving their original identity/recovery/no-rearm assertions.
+
+Independent actual-PTY interval checking caught reset time using the last display tick; strict committed tests reproduced both early reset and shortened manual-deletion recovery (**0.013s**). Mutations now sample actual action time, with injected clocks unchanged. Snapshot review caught hidden selected Restore/Delete rows at25×5; stronger assertions failed across all three profiles (**0.035s**) then passed (**0.041s**). Earlier full/race passes18.284s/27.270s preceded these last corrections and are not the final acceptance gates. Final exact commands/results follow below.
+
+**Data and limits:** database **user_version3**, specification1.1.0, synthetic temporary SQLite fixtures only. No production SQLite queries/tests, migration, backup or retention operation. A whole-workspace GitButler inspection accidentally included pre-existing config/log diffs; no user files were modified or committed, and subsequent inspection uses only individual owned paths. Human Fedora/Zsh/Kitty/tmux/real-clipboard checks, remote CI and release benchmarks are **NOT RUN**. Scripted PTY is not human platform evidence. QN-032 remains REVIEW; next task is final M2 review/gates, and **QN-018 only after M2 acceptance**.
+
+**Final worker gates PASSED**, after the actual-clock and selected-row corrections; Go `go1.26.8-X:nodwarf5`, Linux amd64, all Go commands use `CGO_ENABLED=1 GOCACHE=/tmp/qn032-go-cache`:
+
+- `go test -tags sqlite_fts5 -count=1 ./...` — **18.242s**.
+- `go test -tags sqlite_fts5 -race -count=1 ./...` — **27.112s**.
+- `go vet -tags sqlite_fts5 ./...` — exit0.
+- `go build -tags sqlite_fts5 -o /tmp/quicknote-m2-qn032-bin .` — exit0, normal primary-checkout build.
+- `go test -tags sqlite_fts5 -count=20 -run 'TestQN032|TestQN005|TestQN011T17|TestQN031(LateTrash|Review)|TestQN029(Queue|Canceled|Continuation|ReviewQueued)' .` — **9.300s**; includes independent-process/connection CAS and duplicate retention.
+- `go test -tags sqlite_fts5 -count=1 -v -run TestQN032KeyboardAndLayouts . > /tmp/qn032-layout-snapshots.txt` — exit0, default/legacy/custom at120×40/80×24/50×12/25×5/1×1/2×2. At25×5 selected Restore/Delete/Undo rows remain visible; confirmation retains Escape/Tab and selected no-timer/Delete forever choice. Tiny panels remain bounded and keyboard cancellable.
+- `python3 /tmp/qn032-pty.py` — **4/4** on the final rebuilt binary: default/legacy readonly paste/format/evaluation rejection, default Cancel/four-size restore and permanent deletion, same-ID no-timer restore/Undo, duplicate graph/tag/FTS preservation, explicit permanent-delete graph removal, fresh15-minute reset and restart. Only disposable synthetic HOMEs. The independent coordinator harness additionally performs stricter actual-confirmation-interval checks and final M2 aggregate acceptance; worker PTY does not substitute for that review.
+- `gofmt -l` on all13 changed Go files — no output. Individual owned-path GitButler diffs and added-line whitespace/conflict-marker audit replace historical raw Git diff checks under current policy; final audit evidence is in the task report.
+
+No final worker test failure. Full/race were not repeated after unchanged source. Independent reviews/final M2 acceptance remain pending; task is REVIEW, not DONE.

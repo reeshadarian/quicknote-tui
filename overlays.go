@@ -18,6 +18,7 @@ type Confirmation struct {
 	Kind, Title, Body, Payload string
 	Key                        int
 	Version                    uint64
+	Revision                   int64
 	Confirm                    bool
 	Choice                     int
 }
@@ -54,7 +55,7 @@ func (m *model) popOverlay() {
 }
 func (m *model) clearOverlays(state appState) { m.overlays = nil; m.state = state }
 func (m *model) confirm(kind, title, body, payload string) {
-	m.confirmation = Confirmation{Kind: kind, Title: title, Body: body, Payload: payload, Key: m.activeKey(), Version: m.localVersion}
+	m.confirmation = Confirmation{Kind: kind, Title: title, Body: body, Payload: payload, Key: m.activeKey(), Version: m.localVersion, Revision: m.Note.Revision}
 	m.pushOverlay(stateConfirm)
 }
 func (m *model) showError(title string, err error) {
@@ -66,6 +67,12 @@ func (m model) confirmationView() string {
 	if m.confirmation.Confirm {
 		choice = "Cancel | > Confirm"
 	}
+	if m.confirmation.Kind == "deleteForever" {
+		choice = "> Cancel | Delete forever"
+		if m.confirmation.Confirm {
+			choice = "Cancel | > Delete forever"
+		}
+	}
 	footer := "Esc Cancel · Tab Choose\n" + choice
 	if m.confirmation.Kind == "error" {
 		footer = "Esc Close · Enter Close"
@@ -73,9 +80,12 @@ func (m model) confirmationView() string {
 	if m.confirmation.Kind == "reload" {
 		footer = "Esc Cancel · " + m.shortcut("conflict.reload") + " Confirm\n" + choice
 	}
-	if m.confirmation.Kind == "ghost" {
+	if m.confirmation.Kind == "ghost" || m.confirmation.Kind == "restore" {
 		choices := []string{"Cancel", "Duplicate: keep original", "Trash original: 72h"}
-		footer = "Esc Cancel · Tab Choose\n> " + choices[m.confirmation.Choice]
+		if m.confirmation.Kind == "restore" {
+			choices = m.restoreChoices()
+		}
+		footer = "Esc Cancel · Tab Choose\n> " + choices[min(m.confirmation.Choice, len(choices)-1)]
 	}
 	body := m.confirmation.Body
 	if m.confirmation.Kind == "ttl" {
@@ -94,12 +104,16 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 		m.confirmReload = false
 		return nil
 	case "tab", "left", "right":
-		if m.confirmation.Kind == "ghost" {
+		if m.confirmation.Kind == "ghost" || m.confirmation.Kind == "restore" {
+			count := 3
+			if m.confirmation.Kind == "restore" {
+				count = len(m.restoreChoices())
+			}
 			delta := 1
 			if key == "left" {
-				delta = 2
+				delta = count - 1
 			}
-			m.confirmation.Choice = (m.confirmation.Choice + delta) % 3
+			m.confirmation.Choice = (m.confirmation.Choice + delta) % count
 			m.confirmation.Confirm = m.confirmation.Choice != 0
 		} else {
 			m.confirmation.Confirm = !m.confirmation.Confirm
@@ -152,8 +166,8 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 		return m.writeExport(c.Payload, false, true)
 	case "ghostOverwrite":
 		return m.writeExport(c.Payload, true, true)
-	case "purge":
-		return m.mutate("purge")
+	case "restore", "deleteForever":
+		return m.confirmTrash(c)
 	case "reload":
 		return m.requestOpen(m.activeID(), false, nil, true)
 	case "replace":

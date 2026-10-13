@@ -65,13 +65,6 @@ type recoveryResult struct {
 	Err        error
 	Copy       bool
 }
-type mutationResult struct {
-	Generation uint64
-	NoteID     int
-	Version    uint64
-	Kind       string
-	Err        error
-}
 type helpResult struct {
 	Generation    uint64
 	Active, Trash int
@@ -335,6 +328,7 @@ func (m *model) receiveLoad(msg loadResult) tea.Cmd {
 	m.notes[m.index] = msg.Note
 	m.activateNote() // Pure installation; I/O has already completed.
 	m.clearOverlays(stateTyping)
+	m.viewport.YOffset = 0
 	var recovery tea.Cmd
 	if m.needsSave && m.Note.Revision < msg.Note.Revision {
 		var err error = &ConflictError{ID: m.Note.ID, Expected: m.Note.Revision, Actual: msg.Note.Revision}
@@ -419,28 +413,6 @@ func (m *model) requestCopy() tea.Cmd {
 		return recoveryResult{generation, id, version, saved, err, true}
 	}
 }
-func (m *model) mutate(kind string) tea.Cmd {
-	if m.actionPending || m.activeID() <= 0 {
-		return nil
-	}
-	m.actionPending = true
-	m.openGeneration++
-	m.loadPending = false
-	m.mutationGeneration = m.nextRequest()
-	generation, id, version, revision, store := m.mutationGeneration, m.activeID(), m.localVersion, m.Note.Revision, m.store
-	return func() tea.Msg {
-		var err error
-		switch kind {
-		case "trash":
-			err = store.TrashCAS(id, revision)
-		case "restore":
-			err = store.RestoreCAS(id, revision)
-		case "purge":
-			err = store.PurgeCAS(id, revision)
-		}
-		return mutationResult{generation, id, version, kind, err}
-	}
-}
 
 // All persistence/navigation keys go through this gate. While a save runs,
 // typing/resize remain available; a transition waits for the newest draft.
@@ -517,13 +489,10 @@ func (m *model) runAction(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		if m.activeID() <= 0 {
-			return m.requestOpen(-1, false, nil, false)
-		}
-		if strings.TrimSpace(bufferToString(m.buffer)) == "" {
-			m.confirm("purge", "Permanently delete empty note?", "This cannot be undone by Quicknote.", "")
+			m.discardMemoryDraft()
 			return nil
 		}
-		return m.mutate("trash")
+		return m.requestLifecycle(lifecycleIntent{Kind: "trash"})
 	case "alt+g":
 		m.newGhostDraft("")
 	case "ctrl+g":
@@ -636,6 +605,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashMsg = reason
 			return m, nil
 		}
+		if intent.ID == "trash.deleteForever" {
+			cmd := m.requestDeleteForever()
+			return m, cmd
+		}
+		if intent.ID == "trash.undoLast" {
+			cmd := m.requestUndoTrash()
+			return m, cmd
+		}
 		if intent.ID == "note.pin" {
 			cmd := m.requestPinToggle()
 			return m, cmd
@@ -660,6 +637,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if enabled, reason := a.Enabled(m.actionContext()); !enabled {
 				m.flashMsg = reason
 				return m, nil
+			}
+			if a.ID == "trash.deleteForever" {
+				cmd := m.requestDeleteForever()
+				return m, cmd
+			}
+			if a.ID == "trash.undoLast" {
+				cmd := m.requestUndoTrash()
+				return m, cmd
 			}
 			if a.ID == "note.pin" {
 				cmd := m.requestPinToggle()
@@ -865,31 +850,6 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 		m.stashNote()
 		m.flashMsg = "Saved as a new copy; original kept"
 		return m, nil
-	case mutationResult:
-		if msg.Generation != m.mutationGeneration {
-			return m, nil
-		}
-		m.actionPending = false
-		if msg.NoteID != m.activeID() {
-			return m, nil
-		}
-		if msg.Err != nil {
-			m.recordSaveError(msg.Err)
-			cmd := m.requestConflictRead()
-			return m, cmd
-		}
-		if msg.Version != m.localVersion {
-			m.recordSaveError(ErrNotFound)
-			cmd := m.requestConflictRead()
-			return m, cmd
-		}
-		delete(m.drafts, msg.NoteID)
-		if msg.Kind == "restore" {
-			load := m.requestOpen(msg.NoteID, false, nil, false)
-			return m, load
-		}
-		cmd := m.requestOpen(-1, false, nil, false)
-		return m, cmd
 	case helpResult:
 		if m.state == stateHelp && msg.Generation == m.openGeneration {
 			if msg.Err != nil {
@@ -986,7 +946,7 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 				cmd := m.requestOpen(-1, false, nil, false)
 				return m, cmd
 			case "ctrl+r":
-				cmd := m.mutate("restore")
+				cmd := m.openRestorePicker()
 				return m, cmd
 			case "ctrl+f", "f1", "alt+left", "alt+right":
 				cmd := m.runAction(msg)
@@ -999,16 +959,11 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 			return m, nil
 		}
 		if m.state == stateTyping {
-			if key == "ctrl+f" && !m.actionPending {
+			if key == "ctrl+f" {
 				cmd := m.runAction(msg)
 				return m, cmd
 			}
-			if m.actionPending { // An irreversible operation already owns this snapshot.
-				if key == "esc" {
-					m.flashMsg = "Operation pending; draft kept"
-					return m, nil
-				}
-			}
+
 			if m.saveErr != nil && key == "enter" {
 				cmd := m.requestSave()
 				return m, cmd
@@ -1021,7 +976,8 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 				cmd := m.afterSave(msg)
 				return m, cmd
 			case "ctrl+d":
-				if strings.TrimSpace(bufferToString(m.buffer)) == "" {
+				_, saving := m.saves[m.activeKey()]
+				if m.Note.IsGhost || (m.activeID() <= 0 && !saving) {
 					cmd := m.runAction(msg)
 					return m, cmd
 				}
@@ -1031,9 +987,6 @@ func (m model) updateAsync(msg tea.Msg) (model, tea.Cmd) {
 				m.openGhostConfirmation()
 				return m, nil
 			case "alt+g", "ctrl+n", "ctrl+t", "ctrl+f", "ctrl+s", "esc", "ctrl+c", "alt+left", "alt+right", "f1":
-				if m.actionPending {
-					return m, nil
-				}
 				cmd := m.afterSave(msg)
 				return m, cmd
 			}
@@ -1048,9 +1001,6 @@ func (m model) saveStatus() string {
 			return "Conflict — Enter"
 		}
 		return "Save failed — Enter"
-	}
-	if m.actionPending {
-		return "Working…"
 	}
 	if _, ok := m.lifecycleRequests[m.activeKey()]; ok {
 		return "Saving…"

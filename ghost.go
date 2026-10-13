@@ -94,6 +94,14 @@ func (m *model) discardGhost() {
 	if !m.Note.IsGhost {
 		return
 	}
+	m.discardMemoryDraft()
+}
+
+func (m *model) discardMemoryDraft() {
+	if m.Note.ID != 0 {
+		return
+	}
+	wasGhost := m.Note.IsGhost
 	key := m.activeKey()
 	delete(m.drafts, key)
 	delete(m.saves, key)
@@ -133,7 +141,10 @@ func (m *model) discardGhost() {
 	m.notes = append(m.notes, Note{})
 	m.index = len(m.notes) - 1
 	m.activateNote()
-	m.flashMsg = "Ghost discarded"
+	m.flashMsg = "Unsaved draft discarded"
+	if wasGhost {
+		m.flashMsg = "Ghost discarded"
+	}
 }
 
 type clipboardResult struct {

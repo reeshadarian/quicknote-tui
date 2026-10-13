@@ -47,6 +47,8 @@ type model struct {
 	lifecycleRequests     map[int]lifecycleRequest
 	lifecycleQueued       map[int]lifecycleIntent
 	lifecycleChanges      map[NoteID]LifecycleChange
+	trashUndo             TrashUndo
+	trashUndoGeneration   uint64
 	overlays              []OverlayFrame
 	ttlPicker             TTLPicker
 	confirmation          Confirmation
@@ -95,7 +97,6 @@ type model struct {
 	confirmReload       bool
 	conflictTop         int
 	conflictInspect     bool
-	mutationGeneration  uint64
 	copyPending         bool
 	pendingOpen         *Note
 	pendingActionID     int
@@ -109,7 +110,6 @@ type model struct {
 	searchErr           error
 	saves               map[int]saveRequest
 	pendingAction       *tea.KeyMsg
-	actionPending       bool
 	recoveryGeneration  uint64
 }
 
@@ -258,7 +258,7 @@ func (m *model) generateHelpText() string {
 
 	context := m.actionContext()
 	context.State = stateTyping
-	cheatsheet := m.actionHelp(context) + "\nSnippets: :today: :time: :now: :uuid:\n" + m.actionHelp(ActionContext{State: stateTrash, Note: m.Note})
+	cheatsheet := m.actionHelp(context) + "\nSnippets: :today: :time: :now: :uuid:\n" + m.actionHelp(ActionContext{State: stateTrash, Note: m.Note, UndoReason: m.undoTrashReason(m.timerNow)})
 
 	dbPropsText := fmt.Sprintf("%s\nActive Notes : %d\nTrash Bin    : %d", headerStyle.Render("=== DATABASE ==="), m.statActive, m.statTrash)
 
@@ -414,8 +414,17 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.state == stateTrash {
 			if msg.String() == "up" || msg.String() == "down" || msg.String() == "pgup" || msg.String() == "pgdown" {
-				m.viewport, cmd = m.viewport.Update(msg)
-				cmds = append(cmds, cmd)
+				delta := 1
+				if msg.String() == "up" {
+					delta = -1
+				}
+				if msg.String() == "pgup" {
+					delta = -max(1, m.layout().Height-4)
+				}
+				if msg.String() == "pgdown" {
+					delta = max(1, m.layout().Height-4)
+				}
+				m.viewport.YOffset = max(0, m.viewport.YOffset+delta)
 			}
 			goto Finalize
 		}
@@ -1057,6 +1066,9 @@ func (m model) View() string {
 		return m.panel("Filter through local command", m.pipeInput.View(), "Esc Cancel · Enter Run")
 	}
 	l := m.layout()
+	if m.state == stateTrash {
+		return m.trashView()
+	}
 	editor := m.renderLayoutEditor()
 	if l.Height <= 1 {
 		return clipFrame(editor, l.Width, 1)
