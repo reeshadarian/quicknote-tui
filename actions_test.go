@@ -51,7 +51,7 @@ func TestQN014HelpUsesRegistryBindings(t *testing.T) {
 	}
 }
 func TestQN014FutureCommandsHaveExplicitDisabledReasons(t *testing.T) {
-	for _, id := range []string{"ghost.new", "ttl.set", "note.pin", "trash.deleteForever", "view.sidebar", "theme.pick", "view.motion", "notes.switcher"} {
+	for _, id := range []string{"ttl.set", "note.pin", "trash.deleteForever", "view.sidebar", "theme.pick", "view.motion", "notes.switcher"} {
 		a, ok := findAction(id)
 		if !ok {
 			t.Fatal("missing planned action", id)

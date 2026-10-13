@@ -19,6 +19,7 @@ type Confirmation struct {
 	Key                        int
 	Version                    uint64
 	Confirm                    bool
+	Choice                     int
 }
 
 func isOverlay(s appState) bool { return s != stateTyping && s != stateTrash }
@@ -72,6 +73,10 @@ func (m model) confirmationView() string {
 	if m.confirmation.Kind == "reload" {
 		footer = "Esc Cancel · " + m.shortcut("conflict.reload") + " Confirm\n" + choice
 	}
+	if m.confirmation.Kind == "ghost" {
+		choices := []string{"Cancel", "Duplicate: keep original", "Trash original: 72h"}
+		footer = "Esc Cancel · Tab Choose\n> " + choices[m.confirmation.Choice]
+	}
 	body := m.confirmation.Body
 	if m.confirmation.Kind == "ttl" {
 		body = m.ttlConfirmationBody(m.timerNow)
@@ -85,10 +90,20 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 	switch key {
 	case "esc", "ctrl+c":
 		m.popOverlay()
+		m.confirmation = Confirmation{}
 		m.confirmReload = false
 		return nil
 	case "tab", "left", "right":
-		m.confirmation.Confirm = !m.confirmation.Confirm
+		if m.confirmation.Kind == "ghost" {
+			delta := 1
+			if key == "left" {
+				delta = 2
+			}
+			m.confirmation.Choice = (m.confirmation.Choice + delta) % 3
+			m.confirmation.Confirm = m.confirmation.Choice != 0
+		} else {
+			m.confirmation.Confirm = !m.confirmation.Confirm
+		}
 		return nil
 	case "r":
 		if m.confirmation.Kind != "reload" {
@@ -98,6 +113,7 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 	case "enter":
 		if m.confirmation.Kind == "error" || !m.confirmation.Confirm {
 			m.popOverlay()
+			m.confirmation = Confirmation{}
 			m.confirmReload = false
 			return nil
 		}
@@ -105,6 +121,7 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 		return nil
 	}
 	c := m.confirmation
+	m.confirmation = Confirmation{}
 	m.popOverlay()
 	if c.Key != m.activeKey() || c.Version != m.localVersion {
 		m.flashMsg = "Confirmation canceled: draft changed"
@@ -116,7 +133,25 @@ func (m *model) confirmationKey(key string) tea.Cmd {
 	case "ttl":
 		return m.confirmTTL(c)
 	case "ghost":
-		return m.mutate("ghost")
+		disposition := KeepOriginal
+		if c.Choice == 2 {
+			disposition = TrashOriginal
+		}
+		return m.requestGhostConversion(disposition)
+	case "ghostPersist":
+		if !m.Note.IsGhost {
+			return nil
+		}
+		m.Note.IsGhost = false
+		m.persistEmpty = true
+		m.needsSave = true
+		return m.requestSave()
+	case "ghostCopy":
+		return m.copySnapshot()
+	case "ghostExport":
+		return m.writeExport(c.Payload, false, true)
+	case "ghostOverwrite":
+		return m.writeExport(c.Payload, true, true)
 	case "purge":
 		return m.mutate("purge")
 	case "reload":
@@ -172,6 +207,16 @@ func (m *model) checkExport(path string) tea.Cmd {
 }
 func (m *model) writeExport(path string, allow ...bool) tea.Cmd {
 	overwrite := len(allow) > 0 && allow[0]
+	if m.Note.IsGhost && (len(allow) < 2 || !allow[1]) {
+		kind := "ghostExport"
+		body := "Export creates a persisted file outside memory-only mode."
+		if overwrite {
+			kind = "ghostOverwrite"
+			body += " Existing file contents will be replaced."
+		}
+		m.confirm(kind, "Export ghost outside Quicknote?", body, path)
+		return nil
+	}
 	request, key, text := m.exportGeneration, m.activeKey(), m.buffer.Text()
 	return func() tea.Msg {
 		f, err := os.CreateTemp(filepath.Dir(path), ".quicknote-export-*")
@@ -207,6 +252,9 @@ func (m *model) receiveExportCheck(msg exportCheckResult) tea.Cmd {
 	if msg.Err != nil {
 		m.showError("Export failed", msg.Err)
 		return nil
+	}
+	if msg.Exists && m.Note.IsGhost {
+		return m.writeExport(msg.Path, true)
 	}
 	if msg.Exists {
 		m.confirm("overwrite", "Overwrite file?", "Replace "+msg.Path+"? Existing contents will be replaced.", msg.Path)

@@ -1,0 +1,128 @@
+package main
+
+import tea "github.com/charmbracelet/bubbletea"
+
+type GhostDisposition int
+
+const (
+	KeepOriginal GhostDisposition = iota
+	TrashOriginal
+)
+
+// Identity is allocated before content can receive editor events. Ghosts never
+// inherit persisted lifecycle fields, tags, revision or deletion metadata.
+func (m *model) newGhostDraft(content string) { m.addGhostDraft(content, true) }
+func (m *model) addGhostDraft(content string, activate bool) {
+	m.stashNote()
+	m.sessionSeq++
+	n := Note{SessionID: m.sessionSeq, IsGhost: true, Content: content}
+	m.notes = append(m.notes, n)
+	m.allNotes = append(m.allNotes, n)
+	m.versionSeq++
+	d := EditorDraft{Note: n, buffer: stringToBuffer(content), localVersion: m.versionSeq, viewportTop: new(int)}
+	m.drafts[noteKey(n)] = d
+	if activate {
+		m.index = len(m.notes) - 1
+		m.activateNote()
+		m.clearOverlays(stateTyping)
+		m.openGeneration++
+		m.loadPending = false
+		m.cachedHighlight = ""
+		m.highlightDirty = true
+	}
+}
+func (m *model) requestGhostConversion(disposition GhostDisposition) tea.Cmd {
+	if m.Note.IsGhost || m.Note.DeletedAt != "" {
+		return nil
+	}
+	if m.Note.ID == 0 && m.buffer.Text() == "" {
+		m.newGhostDraft("")
+		return nil
+	}
+	intent := lifecycleIntent{Kind: "ghost", GuardGhost: true, SourceKey: m.activeKey(), SourceVersion: m.localVersion, GhostContent: m.buffer.Text()}
+	if disposition == TrashOriginal {
+		intent.Kind = "ghostTrash"
+	}
+	return m.requestLifecycle(intent)
+}
+func (m *model) openGhostConfirmation() {
+	if m.Note.IsGhost {
+		m.confirm("ghostPersist", "Persist this ghost?", "Create an ordinary saved note. Its content will leave memory-only mode and may remain in database files and backups.", "")
+	} else {
+		m.confirm("ghost", "Continue as a ghost?", "Duplicate keeps the original. Trash keeps it recoverable for 72 hours. Previously persisted copies and backups may remain.", "")
+	}
+}
+func (m *model) completeGhostConversion(r lifecycleRequest) {
+	unchanged := m.activeKey() == r.Key && m.localVersion == r.Version
+	m.addGhostDraft(r.Intent.GhostContent, unchanged)
+	if unchanged {
+		m.flashMsg = "Ghost · unsaved by design"
+	} else {
+		m.flashMsg = "Ghost snapshot retained; newer source draft kept"
+	}
+}
+
+// Discard drops owned references, including filter previews and obsolete export
+// checks. It does not promise erasure of OS memory or already-confirmed output.
+func (m *model) discardGhost() {
+	if !m.Note.IsGhost {
+		return
+	}
+	key := m.activeKey()
+	delete(m.drafts, key)
+	delete(m.saves, key)
+	delete(m.lifecycleQueued, key)
+	delete(m.lifecycleRequests, key)
+	filter := func(notes []Note) []Note {
+		kept := make([]Note, 0, len(notes))
+		for _, n := range notes {
+			if noteKey(n) != key {
+				kept = append(kept, n)
+			}
+		}
+		return kept
+	}
+	m.notes = filter(m.notes)
+	m.allNotes = filter(m.allNotes)
+	m.searchResults = filter(m.searchResults)
+	m.confirmation = Confirmation{}
+	m.pendingAction = nil
+	m.pendingOpen = nil
+	m.conflictRemote = Note{}
+	m.cachedHighlight = ""
+	m.highlightGeneration++
+	m.openGeneration++
+	m.exportGeneration++
+	m.searchGeneration++
+	m.recoveryGeneration++
+	m.loadPending = false
+	m.searchPending = false
+	m.fileInput.Reset()
+	m.pipeInput.Reset()
+	m.searchInput.Reset()
+	m.searchQuery = ""
+	m.viewport.SetContent("")
+	m.clearOverlays(stateTyping)
+	m.EditorDraft = EditorDraft{}
+	m.notes = append(m.notes, Note{})
+	m.index = len(m.notes) - 1
+	m.activateNote()
+	m.flashMsg = "Ghost discarded"
+}
+
+type clipboardResult struct {
+	Key     int
+	Version uint64
+}
+
+func (m *model) requestClipboard() tea.Cmd {
+	if m.Note.IsGhost {
+		m.confirm("ghostCopy", "Copy ghost outside Quicknote?", "Clipboard content leaves memory-only mode. Clipboard tools and history may retain it.", "")
+		return nil
+	}
+	return m.copySnapshot()
+}
+func (m *model) copySnapshot() tea.Cmd {
+	key, version, content := m.activeKey(), m.localVersion, m.buffer.Text()
+	return func() tea.Msg { copyToClipboard(content); return clipboardResult{key, version} }
+}

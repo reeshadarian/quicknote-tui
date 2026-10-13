@@ -10,7 +10,7 @@
 
 ---
 
-Quicknote isn't just a text box—it is a secure, ephemeral knowledge buffer for terminal power users. Built entirely in Go, it features a **custom 2D-rune rendering engine** that bypasses standard terminal limitations to deliver sub-millisecond startup times, native word-wrapping, real-time syntax highlighting, inline math evaluation, and direct shell piping.
+Quicknote isn't just a text box—it is an ephemeral knowledge buffer for terminal power users. Built entirely in Go, it features a **custom 2D-rune rendering engine** that bypasses standard terminal limitations to deliver sub-millisecond startup times, native word-wrapping, real-time syntax highlighting, inline math evaluation, and direct shell piping.
 
 > [!NOTE]
 > **Why another note app?** Quicknote is optimized for *ephemerality*. It is designed for the things you don't want polluting your main knowledge base: temporary JSON blobs, quick server IPs, running logs, and one-off terminal command outputs.
@@ -19,8 +19,8 @@ Quicknote isn't just a text box—it is a secure, ephemeral knowledge buffer for
 
 - **Instant Startup:** Achieves sub-millisecond load times using Memory-Mapped SQLite and lazy-loaded UIs.
 - **Advanced Fuzzy Finder:** Powered by SQLite FTS5. Instantly filter through thousands of notes with exact-line previews and cursor-jumping.
-- **Time-to-Live (TTL):** Append `#kill 2 days` to any note to securely self-destruct it when the timer expires.
-- **Smart Trash:** Deleted notes live for 3 days. The database automatically deduplicates content to save space.
+- **Time-to-Live (TTL):** Append `#kill 2 days` to any note to move it to recoverable Trash when the timer expires.
+- **Smart Trash:** Persisted notes remain recoverable for 72 hours, including separate notes with identical content.
 - **Unix Philosophy:** Pipes seamlessly with standard input (`stdin`) and output (`stdout`).
 
 ---
@@ -74,12 +74,23 @@ Quicknote is designed to keep your hands on the keyboard.
 | :--- | :--- | :--- |
 | <kbd>Ctrl</kbd> + <kbd>F</kbd> | **Fuzzy Find** | Opens the floating search modal. Searches across all active notes. |
 | <kbd>Alt</kbd> + <kbd>X</kbd> | **Shell Pipe** | Pipe the current note through a shell command (e.g., `jq .`). |
-| <kbd>Ctrl</kbd> + <kbd>G</kbd> | **Ghost Mode** | Detach the note from the database. It will permanently delete upon exit. |
+| <kbd>Alt</kbd> + <kbd>G</kbd> | **New Ghost** | Create a memory-only draft before typing; also available in Commands. |
+| <kbd>Ctrl</kbd> + <kbd>G</kbd> | **Ghost Conversion** | Confirm a duplicate that keeps the original, or explicitly move the original to 72-hour Trash. |
 | <kbd>=</kbd> | **Eval Math** | While at the end of an equation (e.g., `sqrt(64)`), evaluates the math inline. |
 | <kbd>Esc</kbd> | **Normal Mode** | Exit search/menus and return to typing. |
 
 > [!TIP]
 > **Searching the Trash:** If you open the Trash bin and press <kbd>Ctrl</kbd> + <kbd>F</kbd>, the fuzzy finder will automatically restrict its search to only your deleted notes.
+
+---
+
+## Ghost privacy
+
+Use **New ghost draft** in Commands or **Alt+G** before entering private text. Ghosts have separate in-memory histories and do not automatically save to SQLite, tags, the search index, files, clipboard, or logs. `#kill` is inert in a ghost. Navigation retains ghosts only for this session; **Ctrl+D** discards the active ghost and its history, and exiting loses all unpersisted ghosts.
+
+**Ctrl+G** defaults to Cancel. Tab or Left/Right chooses **Duplicate: keep original** or **Trash original: 72h**; Enter confirms. A dirty ordinary source must save successfully before conversion. Previous database copies and backups may remain. From a ghost, Ctrl+G separately confirms creating an ordinary persisted note. Promote and autosave do not persist ghosts.
+
+Copy and export each require a warning and explicit confirmation before ghost content leaves memory-only mode; export warns after you submit the filename. Cancel performs no external write. Confirmed output can remain outside Quicknote. Shell filters are explicitly invoked external programs and may retain their input. Memory-only mode cannot guarantee privacy against terminal scrollback, OS memory/swap, crash dumps, clipboard history, backups of previously persisted data, or external programs. Neither expiration nor ghost conversion guarantees secure erasure.
 
 ---
 

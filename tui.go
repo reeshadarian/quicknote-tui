@@ -495,8 +495,7 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "alt+c":
-			copyToClipboard(bufferToString(m.buffer))
-			m.flashMsg = "Copied!"
+			cmds = append(cmds, m.requestClipboard())
 		case "alt+x":
 			m.pushOverlay(statePipe)
 			m.pipeInput.SetValue("")

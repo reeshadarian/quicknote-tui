@@ -147,9 +147,10 @@ func actionRegistry() []Action {
 		makeAction("ttl.up", "Previous expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "up"),
 		makeAction("ttl.down", "Next expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "down"),
 		makeAction("ttl.review", "Review expiration", "Review the absolute local time", "Lifecycle", []appState{stateTTLPicker, stateTTLCustom}, "enter"),
+		makeAction("ghost.new", "New ghost draft", "Create a memory-only draft before typing", "Note", edit, "alt+g"),
 		makeAction("note.new", "New note", "Create a titleless scratch draft", "Note", edit, "ctrl+n"),
 		makeAction("note.trash", "Move to Trash", "Keep a persisted note recoverable for 72 hours", "Note", edit, "ctrl+d"),
-		makeAction("note.ghost", "Toggle ghost mode", "Change memory-only mode; persisted conversion needs confirmation", "Note", edit, "ctrl+g"),
+		makeAction("note.ghost", "Convert ghost mode", "Duplicate safely or explicitly persist a ghost", "Note", edit, "ctrl+g"),
 		makeAction("note.restore", "Restore note", "Restore this Trash entry", "Note", []appState{stateTrash}, "ctrl+r"),
 		makeAction("note.promote", "Promote note", "Save and move the note to the recent front", "Note", edit, "ctrl+u"),
 		makeAction("note.export", "Export note", "Write the draft to a Markdown file", "Files", edit, "ctrl+s"),
@@ -202,7 +203,6 @@ func actionRegistry() []Action {
 		id, title, description, category, task string
 		states                                 []appState
 	}{
-		{"ghost.new", "New ghost draft", "Create a memory-only draft", "Note", "QN-031", edit},
 		{"trash.deleteForever", "Delete forever", "Confirm permanently deleting this Trash entry", "Note", "QN-032", []appState{stateTrash}},
 		{"view.sidebar", "Toggle sidebar", "Show recent notes and tags", "View", "QN-024", nav},
 		{"theme.pick", "Change theme", "Preview and choose a validated theme", "Settings", "QN-033", nav},
@@ -292,6 +292,10 @@ func pinEnabled(c ActionContext) (bool, string) {
 }
 
 func contextualAction(a Action, c ActionContext) Action {
+	if a.ID == "note.trash" && c.Note.IsGhost {
+		a.Title = "Discard ghost"
+		a.Description = "Drop this memory-only draft and its history; no Trash copy"
+	}
 	if a.ID == "note.pin" && c.Note.IsPinned {
 		a.Title = "Unpin note: no timer"
 		a.Description = "Continue with no timer; the cleared expiration stays canceled"

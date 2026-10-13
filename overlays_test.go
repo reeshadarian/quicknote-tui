@@ -53,8 +53,8 @@ func TestQN017GhostConfirmationDefaultsCancel(t *testing.T) {
 	if !m.Note.IsGhost || m.activeID() != 0 || m.activeKey() >= 0 {
 		t.Fatal("confirmed ghost identity invalid")
 	}
-	if _, e = a.GetNote(first.ID); e == nil {
-		t.Fatal("confirmed original not removed")
+	if original, err := a.GetNote(first.ID); err != nil || original.DeletedAt != "" || original.Content != first.Content {
+		t.Fatal("safe duplicate did not preserve original")
 	}
 }
 func TestQN017OverwriteCancelAndAtomicConfirmation(t *testing.T) {

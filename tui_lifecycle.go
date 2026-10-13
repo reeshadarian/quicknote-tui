@@ -13,6 +13,8 @@ type lifecycleIntent struct {
 	Pinned        bool
 	GuardTTL      bool
 	GuardPin      bool
+	GuardGhost    bool
+	GhostContent  string
 	SourceKey     int
 	SourceVersion uint64
 }
@@ -151,12 +153,12 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 		intent.Expiration.Deadline = &deadline
 	}
 	m.bindDraft()
-	if m.store == nil || m.Note.IsGhost || m.activeID() <= 0 {
+	if m.store == nil || m.Note.IsGhost || (m.activeID() <= 0 && !intent.GuardGhost) {
 		return nil
 	}
 	key := m.activeKey()
 	if _, busy := m.lifecycleRequests[key]; busy {
-		if intent.GuardTTL || intent.GuardPin {
+		if intent.GuardTTL || intent.GuardPin || intent.GuardGhost {
 			if m.lifecycleQueued == nil {
 				m.lifecycleQueued = map[int]lifecycleIntent{}
 			}
@@ -169,7 +171,7 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 		m.lifecycleQueued = map[int]lifecycleIntent{}
 	}
 	m.lifecycleQueued[key] = intent
-	if m.needsSave || m.saveErr != nil {
+	if m.needsSave || m.saveErr != nil || m.activeID() == 0 {
 		return m.requestSave()
 	}
 	if _, saving := m.saves[key]; saving {
@@ -179,6 +181,10 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 }
 func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) tea.Cmd {
 	delete(m.lifecycleQueued, key)
+	if intent.GuardGhost && (m.activeKey() != key || d.localVersion != intent.SourceVersion || d.Note.DeletedAt != "" || d.Note.IsGhost) {
+		m.flashMsg = "Ghost conversion canceled: draft changed"
+		return nil
+	}
 	if intent.GuardTTL && (key != intent.SourceKey || m.activeKey() != key || d.localVersion != intent.SourceVersion || d.Note.DeletedAt != "") {
 		m.flashMsg = "Expiration canceled: draft changed"
 		return nil
@@ -206,7 +212,15 @@ func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) t
 			n, e = store.ApplyExpirationCAS(r.ID, r.Expected, intent.Expiration, now)
 		case "pin":
 			n, e = store.ApplyPinnedCAS(r.ID, r.Expected, intent.Pinned, now)
-		case "trash":
+		case "ghost":
+			n, e = store.GetNote(r.ID)
+			if e == nil && n.Revision != r.Expected {
+				e = &ConflictError{ID: r.ID, Expected: r.Expected, Actual: n.Revision}
+			}
+			if e == nil && n.DeletedAt != "" {
+				e = ErrTrashed
+			}
+		case "trash", "ghostTrash":
 			n, e = store.TrashSnapshotCAS(r.ID, r.Expected, DeleteManual, now)
 		case "restore":
 			n, e = store.RestoreSnapshotCAS(r.ID, r.Expected, intent.Restore, now)
@@ -281,10 +295,16 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		// The held acknowledgment can establish the content base immediately before
 		// a later deletion; larger gaps still require a fresh full read.
 		if d.Note.Revision >= known.Revision {
+			if r.Intent.GuardGhost {
+				m.completeGhostConversion(r)
+			}
 			return m.finishExit()
 		}
 		combined, ok := withAdjacentDeletion(msg.Note, known)
 		if !ok {
+			if r.Intent.GuardGhost {
+				m.completeGhostConversion(r)
+			}
 			return m.finishExit()
 		}
 		msg.Note = combined
@@ -317,6 +337,9 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 				list[i].Preview = preview
 			}
 		}
+	}
+	if r.Intent.GuardGhost {
+		m.completeGhostConversion(r)
 	}
 	if recovery != nil {
 		return recovery

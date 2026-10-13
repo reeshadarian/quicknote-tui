@@ -20,6 +20,7 @@ type EditorDraft struct {
 	viewportTop                          *int
 	freeScroll                           bool
 	needsSave                            bool
+	persistEmpty                         bool // explicit ghost persistence may create an empty note
 	saveErr                              error
 	localVersion                         uint64
 	recovered                            bool
