@@ -463,3 +463,244 @@ func TestQN031UnsavedEditedConversionDropsOldSessionIntent(t *testing.T) {
 		t.Fatal("canceled unsaved conversion retained an orphan content-bearing intent", len(m.lifecycleQueued))
 	}
 }
+
+// Public key routing must cancel an unstarted conversion before the save gate
+// resumes navigation. A direct requestOpen call does not exercise this contract.
+func TestQN031ReviewPublicTransitionCancelsQueuedConversion(t *testing.T) {
+	for _, unsaved := range []bool{false, true} {
+		for _, choice := range []int{1, 2} {
+			for _, key := range []string{"alt+right", "alt+left", "ctrl+n", "alt+g", "esc"} {
+				t.Run(fmt.Sprintf("unsaved=%v/choice=%d/%s", unsaved, choice, key), func(t *testing.T) {
+					m, a, _, first, second := asyncModel(t)
+					target := second.ID
+					if key == "alt+left" {
+						m.index = 1
+						m.activateNote()
+						first = second
+						target = m.notes[0].ID
+					}
+					if unsaved {
+						m = updateTest(t, m, keyMessage("ctrl+n"))
+						if key == "alt+left" {
+							source := m.notes[0]
+							m.notes = append(m.notes[1:], source)
+							m.index = len(m.notes) - 1
+							m.activateNote()
+							target = m.notes[m.index-1].ID
+						} else {
+							target = m.notes[1].ID
+						}
+					}
+					m = typeTest(m, " source dirty")
+					text := m.buffer.Text()
+					history := len(m.undoStack)
+					m = updateTest(t, m, keyMessage("ctrl+g"))
+					for i := 0; i < choice; i++ {
+						m = updateTest(t, m, keyMessage("tab"))
+					}
+					var held tea.Cmd
+					m, held = rawUpdate(m, keyMessage("enter"))
+					if held == nil {
+						t.Fatal("source save not held")
+					}
+					m, early := rawUpdate(m, keyMessage(key))
+					if early != nil {
+						t.Fatal("transition bypassed source save")
+					}
+					// Edit once more while the save is held, forcing a second save after an
+					// unsaved source receives its persisted identity.
+					if unsaved {
+						m = typeTest(m, " newest")
+						text = m.buffer.Text()
+						history = len(m.undoStack)
+					}
+					var quit bool
+					m, quit = drainGhostReviewCmd(t, m, held)
+					var id int
+					if err := a.db.QueryRow("SELECT id FROM notes WHERE content=?", text).Scan(&id); err != nil {
+						t.Fatal("latest source not saved", err)
+					}
+					stored, err := a.GetNote(id)
+					if err != nil || stored.DeletedAt != "" {
+						t.Fatal("queued competing transition trashed source", err)
+					}
+					d := m.drafts[id]
+					if d.buffer.Text() != text || len(d.undoStack) != history {
+						t.Fatal("source history lost")
+					}
+					switch key {
+					case "alt+right", "alt+left":
+						if m.activeID() != target {
+							t.Fatal("wrong navigation target", m.activeID(), target)
+						}
+					case "ctrl+n":
+						if m.activeID() != 0 || m.Note.IsGhost || m.buffer.Text() != "" {
+							t.Fatal("New note not completed")
+						}
+					case "alt+g":
+						if !m.Note.IsGhost || m.buffer.Text() != "" {
+							t.Fatal("New Ghost not completed")
+						}
+					case "esc":
+						if !quit {
+							t.Fatal("exit not completed")
+						}
+					}
+					ghosts := 0
+					for _, n := range m.notes {
+						if n.IsGhost {
+							ghosts++
+						}
+					}
+					want := 0
+					if key == "alt+g" {
+						want = 1
+					}
+					if ghosts != want || m.pendingAction != nil || len(m.lifecycleQueued) != 0 || len(m.lifecycleRequests) != 0 || len(m.saves) != 0 {
+						t.Fatal("queued conversion or continuation leaked", ghosts, m.pendingAction)
+					}
+					_ = first
+				})
+			}
+		}
+	}
+}
+
+// Like the common test driver, with an observable terminal Quit outcome.
+func drainGhostReviewCmd(t *testing.T, m model, cmd tea.Cmd) (model, bool) {
+	t.Helper()
+	queue := []tea.Cmd{cmd}
+	quit := false
+	for steps := 0; len(queue) > 0; steps++ {
+		if steps > 200 {
+			t.Fatal("command cycle")
+		}
+		c := queue[0]
+		queue = queue[1:]
+		if c == nil {
+			continue
+		}
+		msg := c()
+		switch msg := msg.(type) {
+		case tea.QuitMsg:
+			quit = true
+		case tea.BatchMsg:
+			queue = append(queue, msg...)
+		case saveResult, lifecycleResult, loadResult, recoveryResult, highlightMsg:
+			var next tea.Cmd
+			m, next = rawUpdate(m, msg)
+			queue = append(queue, next)
+		}
+	}
+	return m, quit
+}
+
+func TestQN031ReviewStartedConversionPreservesPendingTransition(t *testing.T) {
+	for _, choice := range []int{1, 2} {
+		for _, key := range []string{"alt+right", "alt+left", "ctrl+n", "alt+g", "esc"} {
+			for _, dirty := range []bool{false, true} {
+				t.Run(fmt.Sprintf("choice=%d/%s/dirty=%v", choice, key, dirty), func(t *testing.T) {
+					m, a, _, first, second := asyncModel(t)
+					target := second.ID
+					if key == "alt+left" {
+						m.index = 1
+						m.activateNote()
+						first = second
+						target = m.notes[0].ID
+					}
+					m = updateTest(t, m, keyMessage("ctrl+g"))
+					for i := 0; i < choice; i++ {
+						m = updateTest(t, m, keyMessage("tab"))
+					}
+					var held tea.Cmd
+					m, held = rawUpdate(m, keyMessage("enter"))
+					result := held().(lifecycleResult)
+					if result.Err != nil {
+						t.Fatal(result.Err)
+					}
+					if dirty {
+						m = typeTest(m, " newer")
+					}
+					text, history := m.buffer.Text(), len(m.undoStack)
+					var nav tea.Cmd
+					m, nav = rawUpdate(m, keyMessage(key))
+					// Hold public navigation loads as well as the successful conversion ack.
+					// Completion must not activate the captured ghost and invalidate this load.
+					var ack tea.Cmd
+					m, ack = rawUpdate(m, result)
+					var quit bool
+					m, quit = drainGhostReviewCmd(t, m, ack)
+					var navQuit bool
+					m, navQuit = drainGhostReviewCmd(t, m, nav)
+					quit = quit || navQuit
+					n, err := a.GetNote(first.ID)
+					if err != nil || (n.DeletedAt != "") != (choice == 2) {
+						t.Fatal("successful conversion write not reconciled", n, err)
+					}
+					d := m.drafts[first.ID]
+					if d.buffer.Text() != text || len(d.undoStack) != history {
+						t.Fatal("source latest text/history lost")
+					}
+					if choice == 2 && dirty && key == "esc" {
+						if quit || m.state != stateConflict || !m.needsSave {
+							t.Fatal("exit lost dirty trashed source recovery")
+						}
+						return
+					}
+					switch key {
+					case "alt+right", "alt+left":
+						if m.activeID() != target {
+							t.Fatal("pending navigation interrupted", m.activeID(), target, m.pendingAction)
+						}
+					case "ctrl+n":
+						if m.activeID() != 0 || m.Note.IsGhost || m.buffer.Text() != "" {
+							t.Fatal("pending New note interrupted")
+						}
+					case "alt+g":
+						if !m.Note.IsGhost || m.buffer.Text() != "" {
+							t.Fatal("pending New Ghost interrupted")
+						}
+					case "esc":
+						if !quit {
+							t.Fatal("exit stalled")
+						}
+					}
+					ghosts := 0
+					captured := 0
+					for _, n := range m.notes {
+						if n.IsGhost {
+							ghosts++
+							if n.Content == first.Content {
+								captured++
+							}
+						}
+					}
+					want := 1
+					if key == "alt+g" {
+						want = 2
+					}
+					if ghosts != want || captured != 1 || m.pendingAction != nil || len(m.lifecycleRequests) != 0 || len(m.saves) != 0 {
+						t.Fatal("captured ghost or continuation incorrect", ghosts, captured, m.pendingAction)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestQN031ReviewStartedTrashRetainsRecoveryAtNavigationBoundary(t *testing.T) {
+	m, _, _, _, _ := asyncModel(t)
+	m = updateTest(t, m, keyMessage("ctrl+g"))
+	m = updateTest(t, m, keyMessage("tab"))
+	m = updateTest(t, m, keyMessage("tab"))
+	m, held := rawUpdate(m, keyMessage("enter"))
+	result := held().(lifecycleResult)
+	m = typeTest(m, " newer")
+	text, history := m.buffer.Text(), len(m.undoStack)
+	m, _ = rawUpdate(m, keyMessage("alt+left"))
+	m, ack := rawUpdate(m, result)
+	m, quit := drainGhostReviewCmd(t, m, ack)
+	if quit || m.state != stateConflict || m.buffer.Text() != text || len(m.undoStack) != history || !m.needsSave {
+		t.Fatal("unavailable navigation bypassed dirty source recovery", m.state)
+	}
+}

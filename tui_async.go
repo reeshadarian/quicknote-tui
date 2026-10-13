@@ -207,6 +207,9 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 		return nil
 	}
 	if active {
+		if m.pendingAction != nil && m.pendingActionID == r.Key {
+			m.pendingActionID = msg.Note.ID
+		}
 		m.Note = cloneNote(d.Note)
 		m.needsSave, m.saveErr = d.needsSave, nil
 		m.persistEmpty = false
@@ -220,7 +223,7 @@ func (m *model) receiveSave(msg saveResult) tea.Cmd {
 			}
 		}
 		m.flashMsg = "Saved"
-		if m.pendingAction != nil && m.pendingActionID == r.Key {
+		if m.pendingAction != nil && m.pendingActionID == msg.Note.ID {
 			if m.exitPending() {
 				return m.finishExit()
 			}
@@ -442,6 +445,11 @@ func (m *model) mutate(kind string) tea.Cmd {
 // All persistence/navigation keys go through this gate. While a save runs,
 // typing/resize remain available; a transition waits for the newest draft.
 func (m *model) afterSave(key tea.KeyMsg) tea.Cmd {
+	// A later public transition supersedes a conversion that has not started.
+	// Started writes remain owned by lifecycleRequests and must be acknowledged.
+	if intent, ok := m.lifecycleQueued[m.activeKey()]; ok && intent.GuardGhost {
+		delete(m.lifecycleQueued, m.activeKey())
+	}
 	m.pendingAction = &key
 	m.pendingActionID = m.activeKey()
 	if m.exitPending() && !m.needsSave && m.saveErr == nil {

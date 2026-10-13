@@ -297,6 +297,7 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		if d.Note.Revision >= known.Revision {
 			if r.Intent.GuardGhost {
 				m.completeGhostConversion(r)
+				return m.resumeGhostTransition(r)
 			}
 			return m.finishExit()
 		}
@@ -304,6 +305,7 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 		if !ok {
 			if r.Intent.GuardGhost {
 				m.completeGhostConversion(r)
+				return m.resumeGhostTransition(r)
 			}
 			return m.finishExit()
 		}
@@ -340,6 +342,9 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	}
 	if r.Intent.GuardGhost {
 		m.completeGhostConversion(r)
+		if d.Note.DeletedAt != "" && m.pendingAction != nil && m.pendingActionID == r.Key && m.activeKey() == r.Key && !m.exitPending() {
+			return m.resumeGhostTransition(r)
+		}
 	}
 	if recovery != nil {
 		return recovery

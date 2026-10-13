@@ -53,13 +53,36 @@ func (m *model) openGhostConfirmation() {
 	}
 }
 func (m *model) completeGhostConversion(r lifecycleRequest) {
-	unchanged := m.activeKey() == r.Key && m.localVersion == r.Version
+	unchanged := m.activeKey() == r.Key && m.localVersion == r.Version && m.pendingAction == nil && !m.loadPending && !isOverlay(m.state)
 	m.addGhostDraft(r.Intent.GhostContent, unchanged)
 	if unchanged {
 		m.flashMsg = "Ghost · unsaved by design"
 	} else {
 		m.flashMsg = "Ghost snapshot retained; newer source draft kept"
 	}
+}
+
+// A successful Trash conversion may leave newer unsaved source text. Keep its
+// recoverable draft while completing a requested navigation; exit still uses
+// the ordinary all-draft recovery gate. Active-note navigation must not inherit
+// the source's newly installed Trash/Conflict context.
+func (m *model) resumeGhostTransition(r lifecycleRequest) tea.Cmd {
+	if m.pendingAction != nil && m.pendingActionID == r.Key && m.activeKey() == r.Key && !m.exitPending() {
+		key := *m.pendingAction
+		if m.Note.DeletedAt != "" {
+			m.pendingAction = nil
+			if (key.String() == "alt+left" && m.index == 0) || (key.String() == "alt+right" && m.index+1 >= len(m.notes)) {
+				if m.needsSave || m.saveErr != nil {
+					return m.requestConflictRead()
+				}
+				return nil
+			}
+			m.clearOverlays(stateTyping)
+			return m.runAction(key)
+		}
+		return m.afterSave(key)
+	}
+	return m.finishExit()
 }
 
 // Discard drops owned references, including filter previews and obsolete export
