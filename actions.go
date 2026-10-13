@@ -141,6 +141,11 @@ func actionRegistry() []Action {
 		makeAction("confirmation.accept", "Accept selected choice", "Run only the explicitly selected confirmation", "Confirmation", []appState{stateConfirm}, "enter"),
 		makeAction("commands.open", "Commands", "Open the basic command menu (fuzzy palette is QN-023)", "Application", []appState{stateTyping, stateTrash, stateHelp}),
 		makeAction("keyboard.profile", "Switch keyboard profile", "Switch default/legacy profile and save keyboard.json", "Settings", nav),
+		makeAction("ttl.set", "Set expiration", "Choose a durable expiration preset", "Lifecycle", nav, "alt+t"),
+		makeAction("ttl.cancel", "Cancel expiration picker", "Keep the draft unchanged", "Lifecycle", []appState{stateTTLPicker, stateTTLCustom}, "esc", "ctrl+c"),
+		makeAction("ttl.up", "Previous expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "up"),
+		makeAction("ttl.down", "Next expiration", "Choose a preset", "Lifecycle", []appState{stateTTLPicker}, "down"),
+		makeAction("ttl.review", "Review expiration", "Review the absolute local time", "Lifecycle", []appState{stateTTLPicker, stateTTLCustom}, "enter"),
 		makeAction("note.new", "New note", "Create a titleless scratch draft", "Note", edit, "ctrl+n"),
 		makeAction("note.trash", "Move to Trash", "Keep a persisted note recoverable for 72 hours", "Note", edit, "ctrl+d"),
 		makeAction("note.ghost", "Toggle ghost mode", "Change memory-only mode; persisted conversion needs confirmation", "Note", edit, "ctrl+g"),
@@ -197,7 +202,6 @@ func actionRegistry() []Action {
 		states                                 []appState
 	}{
 		{"ghost.new", "New ghost draft", "Create a memory-only draft", "Note", "QN-031", edit},
-		{"ttl.set", "Set expiration", "Choose a durable expiration preset", "Lifecycle", "QN-029", edit},
 		{"note.pin", "Pin or unpin", "Control automatic expiration", "Lifecycle", "QN-030", edit},
 		{"trash.deleteForever", "Delete forever", "Confirm permanently deleting this Trash entry", "Note", "QN-032", []appState{stateTrash}},
 		{"view.sidebar", "Toggle sidebar", "Show recent notes and tags", "View", "QN-024", nav},
@@ -211,6 +215,10 @@ func actionRegistry() []Action {
 		a = append(a, future)
 	}
 	for i := range a {
+		if a[i].ID == "ttl.set" {
+			a[i].Execute = func() tea.Msg { return ActionMsg{"ttl.set"} }
+			a[i].Enabled = ttlEnabled
+		}
 		if a[i].ID == "note.restore" {
 			a[i].Enabled = func(c ActionContext) (bool, string) {
 				if c.Note.ID <= 0 {

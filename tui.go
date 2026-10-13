@@ -27,6 +27,9 @@ const (
 	stateConflict
 	stateCommands
 	stateConfirm
+	stateTTLPicker
+	stateTTLCustom
+	stateCount
 )
 
 type textState struct {
@@ -45,6 +48,7 @@ type model struct {
 	lifecycleQueued       map[int]lifecycleIntent
 	lifecycleChanges      map[NoteID]LifecycleChange
 	overlays              []OverlayFrame
+	ttlPicker             TTLPicker
 	confirmation          Confirmation
 	exportGeneration      uint64
 	windowHeight          int
@@ -1013,6 +1017,8 @@ func (m model) View() string {
 		m.Note = cloneNote(m.notes[m.index])
 	}
 	switch m.state {
+	case stateTTLPicker, stateTTLCustom:
+		return m.ttlPickerView()
 	case stateConfirm:
 		return m.confirmationView()
 	case stateCommands:
@@ -1053,22 +1059,7 @@ func (m model) View() string {
 	if l.Height <= 1 {
 		return clipFrame(editor, l.Width, 1)
 	}
-	status := fmt.Sprintf("[%s] Ln %d Col %d · %s Commands", m.saveStatus(), m.cursorRow+1, m.cursorCol+1, m.shortcut("commands.open"))
-	if m.Note.ExpiresAt.Valid && !m.Note.IsGhost && !m.Note.IsPinned && m.state != stateTrash {
-		if deadline, err := ParseLifecycleTime(m.Note.ExpiresAt.String); err == nil {
-			status = "Expires in " + formatKillTime(deadline.Sub(m.timerNow)) + " · " + status
-		}
-	}
-	if m.Note.ExpirationNeedsReview {
-		status = "Expiration needs review · " + status
-	}
-
-	if m.state == stateTrash {
-		status = "Trash · Ctrl+R Restore · Esc Back"
-	}
-	if m.flashMsg != "" {
-		status = m.flashMsg + " · " + m.saveStatus()
-	}
+	status, _ := m.statusLayout()
 	return clipFrame(editor+"\n"+status, l.Width, l.Height)
 }
 func (m model) renderEditorView() string { return m.renderLayoutEditor() }

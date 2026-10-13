@@ -52,7 +52,7 @@ func (k Keymap) Validate() error {
 		if id == "edit.codePair" || id == "edit.evaluate" {
 			return fmt.Errorf("literal formatting keys cannot be rebound")
 		}
-		if id == "search.cancel" || id == "help.close" || id == "conflict.edit" || id == "file.cancel" || id == "pipe.cancel" {
+		if id == "search.cancel" || id == "help.close" || id == "conflict.edit" || id == "file.cancel" || id == "pipe.cancel" || id == "ttl.cancel" {
 			hasEsc := false
 			for _, key := range keys {
 				hasEsc = hasEsc || key == "esc"
@@ -74,7 +74,7 @@ func (k Keymap) Validate() error {
 			}
 		}
 	}
-	for state := stateTyping; state <= stateConfirm; state++ {
+	for state := stateTyping; state < stateCount; state++ {
 		seen := map[string]string{}
 		for _, a := range actionRegistry() {
 			if !a.Available(ActionContext{State: state}) {

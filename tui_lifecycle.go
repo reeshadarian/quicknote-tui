@@ -7,10 +7,13 @@ import (
 )
 
 type lifecycleIntent struct {
-	Kind       string
-	Expiration ExpirationChoice
-	Restore    RestoreMode
-	Pinned     bool
+	Kind          string
+	Expiration    ExpirationChoice
+	Restore       RestoreMode
+	Pinned        bool
+	GuardTTL      bool
+	SourceKey     int
+	SourceVersion uint64
 }
 type lifecycleRequest struct {
 	Key                 int
@@ -169,6 +172,10 @@ func (m *model) requestLifecycle(intent lifecycleIntent) tea.Cmd {
 }
 func (m *model) startLifecycle(key int, d EditorDraft, intent lifecycleIntent) tea.Cmd {
 	delete(m.lifecycleQueued, key)
+	if intent.GuardTTL && (key != intent.SourceKey || m.activeKey() != key || d.localVersion != intent.SourceVersion || d.Note.DeletedAt != "") {
+		m.flashMsg = "Expiration canceled: draft changed"
+		return nil
+	}
 	if intent.Kind == "expire" && !noteDue(d.Note, m.lifecycleNow()) {
 		return nil
 	}
@@ -280,6 +287,9 @@ func (m *model) receiveLifecycle(msg lifecycleResult) tea.Cmd {
 	}
 	m.drafts[r.Key] = d
 	recovery := m.installLifecycleDraft(r.Key, d)
+	if r.Intent.GuardTTL && m.activeKey() == r.Key && m.flashMsg == "Setting expiration…" {
+		m.flashMsg = "Expiration updated"
+	}
 	for _, list := range [][]Note{m.notes, m.allNotes} {
 		for i := range list {
 			if list[i].ID == r.ID {
